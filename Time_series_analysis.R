@@ -119,41 +119,10 @@ norway_waterquality <- left_join(
  by = c("Vannlokalitet" = "station")
 )
 
-# Classify species into harmful algal genera using substring search (case-insensitive, multiple spelling variants)
-norway_counts <- norway_counts %>%
- mutate(
-  # Genus classification using substring search (case-insensitive, multiple spelling variants)
-  genus = case_when(
-   str_detect(tolower(species), "alexandrium") ~ "Alexandrium",
-   str_detect(tolower(species), "dinophysis") ~ "Dinophysis",
-   str_detect(tolower(species), "pseudo-nitzschia|pseudonitzschia|pseudo nitzschia") ~ "Pseudo-nitzschia",
-   str_detect(tolower(species), "azadinium") ~ "Azadinium",
-   str_detect(tolower(species), "chrysochromulina|chryso chromulina") ~ "Chrysochromulina",
-   str_detect(tolower(species), "prymnesium") ~ "Prymnesium",
-   TRUE ~ "Other"
-  ),
-
-  # Toxin syndrome classification
-  toxin_syndrome = case_when(
-   str_detect(tolower(species), "alexandrium") ~ "PSP",
-   str_detect(tolower(species), "dinophysis") ~ "DSP",
-   str_detect(tolower(species), "pseudo-nitzschia|pseudonitzschia|pseudo nitzschia") ~ "ASP",
-   str_detect(tolower(species), "azadinium") ~ "AZP",
-   str_detect(tolower(species), "chrysochromulina|chryso chromulina|prymnesium") ~ "Fish_killer",
-   TRUE ~ "Other"
-  ),
-
-  # Harmful algae flag
-  harmful_algae = case_when(
-   str_detect(tolower(species), "alexandrium|dinophysis|pseudo-nitzschia|pseudonitzschia|pseudo nitzschia|azadinium|chrysochromulina|chryso chromulina|prymnesium") ~ TRUE,
-   TRUE ~ FALSE
-  )
- )
-
-# Introduce genus-level probability keys for all harmful algal genera
+# Classify into 11 harmful algal genera, assign toxin syndromes, and generate probability keys
 norway_counts <- norway_counts %>%
   mutate(cells_L = as.numeric(cells_L)) %>%
-  process_harmful_genera_probabilities()
+  process_harmful_genera_comprehensive()
 
 # Remove any absent entries on dates where a harmful genus was actually present
 # stems from the operation before that changed all other species to "No harmful algae"
@@ -237,77 +206,135 @@ norway_combined <- full_join(norway_combined %>% ungroup() %>% dplyr::select(-la
 
 norway_combined <- update_dates(norway_combined %>% drop_na(date))
 
-# introduce logistic column (0 = absent and 1 = present) for logistic regression
-norway_combined <-
- norway_combined %>%
- mutate(
-   # Create overall harmful algae presence indicator
-   probability = case_when(
-     harmful_algae == TRUE & !is.na(cells_L) & cells_L > 0 ~ "present",
-     is.na(species) | is.na(cells_L) ~ NA_character_,
-     TRUE ~ "absent"
-   ),
-   logistic = ifelse(probability == "absent", 0, 1)
- ) %>%
- convert_as_factor(probability) %>%
- mutate(month = month(date))
+# Recompute overall probability and logistic after joining with abiotic data
+norway_combined <- norway_combined %>%
+  mutate(
+    probability = case_when(
+      harmful_algae == TRUE & !is.na(cells_L) & cells_L > 0 ~ "present",
+      is.na(species) | is.na(cells_L)                        ~ NA_character_,
+      TRUE                                                    ~ "absent"
+    ),
+    logistic = ifelse(probability == "absent", 0, 1)
+  ) %>%
+  convert_as_factor(probability) %>%
+  mutate(month = month(date))
 
-# Step 1: Aggregate genus-level probabilities and categorical fields per date/station
+# Step 1: Aggregate genus-level probabilities, cell concentrations and categorical fields per date/station
 norway_combined_probs <- norway_combined %>%
   group_by(date, station) %>%
   summarise(
-    # Aggregate overall harmful algae presence (any presence = present)
+    # Overall harmful algae presence (any presence = present)
     probability = case_when(
       any(probability == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability)) ~ NA_character_,
-      TRUE ~ "absent"
+      all(is.na(probability))                     ~ NA_character_,
+      TRUE                                        ~ "absent"
     ),
-    # Individual genus probabilities (any species presence within genus = genus present)
+    # Individual genus probabilities
     probability_Alexandrium = case_when(
       any(probability_Alexandrium == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Alexandrium)) ~ NA_character_,
+      all(is.na(probability_Alexandrium))                     ~ NA_character_,
       TRUE ~ "absent"
     ),
     probability_Dinophysis = case_when(
       any(probability_Dinophysis == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Dinophysis)) ~ NA_character_,
+      all(is.na(probability_Dinophysis))                     ~ NA_character_,
       TRUE ~ "absent"
     ),
     probability_Pseudonitzschia = case_when(
       any(probability_Pseudonitzschia == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Pseudonitzschia)) ~ NA_character_,
+      all(is.na(probability_Pseudonitzschia))                     ~ NA_character_,
       TRUE ~ "absent"
     ),
     probability_Azadinium = case_when(
       any(probability_Azadinium == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Azadinium)) ~ NA_character_,
+      all(is.na(probability_Azadinium))                     ~ NA_character_,
       TRUE ~ "absent"
     ),
     probability_Chrysochromulina = case_when(
       any(probability_Chrysochromulina == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Chrysochromulina)) ~ NA_character_,
+      all(is.na(probability_Chrysochromulina))                     ~ NA_character_,
       TRUE ~ "absent"
     ),
     probability_Prymnesium = case_when(
       any(probability_Prymnesium == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Prymnesium)) ~ NA_character_,
+      all(is.na(probability_Prymnesium))                     ~ NA_character_,
       TRUE ~ "absent"
     ),
+    probability_Amphidinium = case_when(
+      any(probability_Amphidinium == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Amphidinium))                     ~ NA_character_,
+      TRUE ~ "absent"
+    ),
+    probability_Pseudochattonella = case_when(
+      any(probability_Pseudochattonella == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Pseudochattonella))                     ~ NA_character_,
+      TRUE ~ "absent"
+    ),
+    probability_Phaeocystis = case_when(
+      any(probability_Phaeocystis == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Phaeocystis))                     ~ NA_character_,
+      TRUE ~ "absent"
+    ),
+    probability_Karlodinium = case_when(
+      any(probability_Karlodinium == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Karlodinium))                     ~ NA_character_,
+      TRUE ~ "absent"
+    ),
+    probability_Cyanobacteria = case_when(
+      any(probability_Cyanobacteria == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Cyanobacteria))                     ~ NA_character_,
+      TRUE ~ "absent"
+    ),
+    # Genus-level cell concentration totals per date/station
+    cells_L_Alexandrium     = sum(ifelse(genus == "Alexandrium",       cells_L, 0), na.rm = TRUE),
+    cells_L_Dinophysis      = sum(ifelse(genus == "Dinophysis",        cells_L, 0), na.rm = TRUE),
+    cells_L_Pseudonitzschia = sum(ifelse(genus == "Pseudo-nitzschia",  cells_L, 0), na.rm = TRUE),
+    cells_L_Azadinium       = sum(ifelse(genus == "Azadinium",         cells_L, 0), na.rm = TRUE),
+    cells_L_Chrysochromulina = sum(ifelse(genus == "Chrysochromulina", cells_L, 0), na.rm = TRUE),
+    cells_L_Prymnesium      = sum(ifelse(genus == "Prymnesium",        cells_L, 0), na.rm = TRUE),
+    cells_L_Amphidinium     = sum(ifelse(genus == "Amphidinium",       cells_L, 0), na.rm = TRUE),
+    cells_L_Pseudochattonella = sum(ifelse(genus == "Pseudochattonella", cells_L, 0), na.rm = TRUE),
+    cells_L_Phaeocystis     = sum(ifelse(genus == "Phaeocystis",       cells_L, 0), na.rm = TRUE),
+    cells_L_Karlodinium     = sum(ifelse(genus == "Karlodinium",       cells_L, 0), na.rm = TRUE),
+    cells_L_Cyanobacteria   = sum(ifelse(genus == "Cyanobacteria",     cells_L, 0), na.rm = TRUE),
     # Keep first value of categorical/date-component fields
-    across(c(day, month, year, doy, strat, species, genus, toxin_syndrome), first),
+    across(c(day, month, year, doy, strat, species, genus, toxin_syndrome, harmful_algae), first),
     .groups = "drop"
   ) %>%
-  mutate(logistic = ifelse(probability == "absent", 0, 1))
+  mutate(
+    logistic = ifelse(probability == "absent", 0, 1),
+    country  = "Norway"
+  )
 
 # Step 2: Average all numeric environmental variables per date/station
 norway_combined_num <- norway_combined %>%
   group_by(date, station) %>%
   summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
-  dplyr::select(-any_of(c("day", "month", "year", "doy", "logistic")))
+  dplyr::select(-any_of(c("day", "month", "year", "doy", "logistic",
+    "cells_L_Alexandrium", "cells_L_Dinophysis", "cells_L_Pseudonitzschia",
+    "cells_L_Azadinium", "cells_L_Chrysochromulina", "cells_L_Prymnesium",
+    "cells_L_Amphidinium", "cells_L_Pseudochattonella", "cells_L_Phaeocystis",
+    "cells_L_Karlodinium", "cells_L_Cyanobacteria")))
 
 # Step 3: Join aggregated probabilities with numeric environmental summary
 norway_combined <- left_join(norway_combined_probs, norway_combined_num,
                               by = c("date", "station"))
+
+# Step 4: Compute risk classification levels from aggregated genus-specific cell concentrations
+norway_combined <- norway_combined %>%
+  mutate(
+    risk_level_Alexandrium     = case_when(cells_L_Alexandrium     >= 10000 ~ "High", cells_L_Alexandrium     >= 1000 ~ "Moderate", cells_L_Alexandrium     > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Dinophysis      = case_when(cells_L_Dinophysis      >= 10000 ~ "High", cells_L_Dinophysis      >= 1000 ~ "Moderate", cells_L_Dinophysis      > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Pseudonitzschia = case_when(cells_L_Pseudonitzschia >= 10000 ~ "High", cells_L_Pseudonitzschia >= 1000 ~ "Moderate", cells_L_Pseudonitzschia > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Azadinium       = case_when(cells_L_Azadinium       >= 10000 ~ "High", cells_L_Azadinium       >= 1000 ~ "Moderate", cells_L_Azadinium       > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Chrysochromulina = case_when(cells_L_Chrysochromulina >= 10000 ~ "High", cells_L_Chrysochromulina >= 1000 ~ "Moderate", cells_L_Chrysochromulina > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Prymnesium      = case_when(cells_L_Prymnesium      >= 10000 ~ "High", cells_L_Prymnesium      >= 1000 ~ "Moderate", cells_L_Prymnesium      > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Amphidinium     = case_when(cells_L_Amphidinium     >= 10000 ~ "High", cells_L_Amphidinium     >= 1000 ~ "Moderate", cells_L_Amphidinium     > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Pseudochattonella = case_when(cells_L_Pseudochattonella >= 10000 ~ "High", cells_L_Pseudochattonella >= 1000 ~ "Moderate", cells_L_Pseudochattonella > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Phaeocystis     = case_when(cells_L_Phaeocystis     >= 10000 ~ "High", cells_L_Phaeocystis     >= 1000 ~ "Moderate", cells_L_Phaeocystis     > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Karlodinium     = case_when(cells_L_Karlodinium     >= 10000 ~ "High", cells_L_Karlodinium     >= 1000 ~ "Moderate", cells_L_Karlodinium     > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Cyanobacteria   = case_when(cells_L_Cyanobacteria   >= 10000 ~ "High", cells_L_Cyanobacteria   >= 1000 ~ "Moderate", cells_L_Cyanobacteria   > 0 ~ "Low", TRUE ~ "None")
+  )
 
 # Save norway_combined as a new txt.file
 write.table(norway_combined,
@@ -425,32 +452,27 @@ denmark_ctd <- denmark_ctd %>%
  ungroup()
 
 # General data transformations: Microalgae counts data ####### 
-# Replace occurrences of "Alexandrium_pseudogoniaulax" with "Alexandrium pseudogonyaulax" and introduce probability key
-denmark_counts$species <- str_replace_all(denmark_counts$species,
- c("_" = " ", "Alexandrium pseudogoniaulax" = "Alexandrium pseudogonyaulax")
-)
+# Replace underscores with spaces in species names and classify into 11 harmful genera
+denmark_counts$species <- str_replace_all(denmark_counts$species, "_", " ")
 
-denmark_counts <- denmark_counts %>% 
-  mutate(cells_L = as.numeric(cells_L)) %>% 
-  process_alexandrium_and_introduce_probability_key()
+denmark_counts <- denmark_counts %>%
+  mutate(cells_L = as.numeric(cells_L)) %>%
+  process_harmful_genera_comprehensive()
 
 # Aggregate carbon data per station and date first
-denmark_carbon <- denmark_counts %>% 
-  dplyr::select(station, date, `C_(µgC_L-1)`) %>% 
-  group_by(station, date) %>% 
+denmark_carbon <- denmark_counts %>%
+  dplyr::select(station, date, `C_(µgC_L-1)`) %>%
+  group_by(station, date) %>%
   mutate(`C_(µgC_L-1)` = as.numeric(`C_(µgC_L-1)`)) %>%
   dplyr::summarise(C = mean(`C_(µgC_L-1)`))
 
-# Only keep one "No Alexandrium" entry per date
-alex_intermediate <-
- denmark_counts %>% 
- filter(!species %in% c("No Alexandrium", NA, "Alexandrium pseudogonyaulax"))
+# Remove duplicate "No harmful algae" entries on dates where a harmful genus was actually present
+harmful_algae_intermediate <- denmark_counts %>%
+  filter(!species %in% c("No harmful algae") & harmful_algae == TRUE)
 
-denmark_counts <- filter_alexandrium(denmark_counts,
-                   species_col = "species",
-                   grouping_cols = c("station", "date", "year", "month", "day"))
+denmark_counts <- filter_harmful_algae(denmark_counts, species_col = "species")
 
-denmark_counts <- full_join(denmark_counts, alex_intermediate)
+denmark_counts <- full_join(denmark_counts, harmful_algae_intermediate)
 
 denmark_counts <- left_join(denmark_counts, denmark_carbon, by = c("station", "date"))
 
@@ -476,9 +498,9 @@ denmark_combined <- denmark_counts %>%
 
 ####### Merge all Danish data files ####### 
 # Average abiotic parameter dataframes by date and station as they occassionally have two measurements
-denmark_counts_sub <- denmark_counts %>% 
-  group_by(station, date, species, across(starts_with("probability"))) %>%
-  reframe(across(where(is.numeric), mean, na.rm = TRUE)) 
+denmark_counts_sub <- denmark_counts %>%
+  group_by(station, date, species, harmful_algae, genus, toxin_syndrome, across(starts_with("probability"))) %>%
+  reframe(across(where(is.numeric), mean, na.rm = TRUE))
 
 denmark_waterquality_sub <- denmark_waterquality %>% ungroup() %>%
   dplyr::select(-day, -month, -year, -lat, -lon)
@@ -614,16 +636,18 @@ denmark_combined <-
   all.y = T
  )
 
-# Introduce probability key
+# Introduce overall probability and logistic columns for all harmful genera
 denmark_combined <- denmark_combined %>%
- mutate(
-  probability = case_when(
-   species == "Alexandrium pseudogonyaulax" ~ "present",
-   is.na(species) ~ NA_character_,
-   TRUE ~ "absent"
-  ),
-  probability = as.factor(probability)
- )
+  mutate(
+    probability = case_when(
+      harmful_algae == TRUE & !is.na(cells_L) & cells_L > 0 ~ "present",
+      is.na(species) | is.na(cells_L)                        ~ NA_character_,
+      TRUE                                                    ~ "absent"
+    ),
+    logistic    = ifelse(probability == "absent", 0, 1),
+    probability = as.factor(probability),
+    country     = "Denmark"
+  )
 
 # Rename columns
 denmark_combined <- denmark_combined %>% 
@@ -772,17 +796,18 @@ sweden_phyto <-
  filter(str_detect(parameter, c("Abundance|counted"))) %>%
  filter(parameter != "Abundance class")
 
-# Introduce probability key and change all non-Alexandrium pseudogonyaulax entries to "No Alexandrium"
-sweden_phyto <- process_alexandrium_and_introduce_probability_key(sweden_phyto)
+# Classify into 11 harmful genera, assign toxin syndromes, and generate probability keys
+sweden_phyto <- sweden_phyto %>%
+  mutate(cells_L = as.numeric(cells_L)) %>%
+  process_harmful_genera_comprehensive()
 
-# remove any absent entries on dates where A. pseudogonyaulax was actually present
-# Before that filter out all other Alexandrium species and join them after
-alex_intermediate <- sweden_phyto %>% 
-  filter(!species %in% c("No Alexandrium", NA, "Alexandrium pseudogonyaulax"))
+# Remove duplicate "No harmful algae" entries on dates where a harmful genus was actually present
+harmful_algae_intermediate <- sweden_phyto %>%
+  filter(!species %in% c("No harmful algae") & harmful_algae == TRUE)
 
-sweden_phyto <- filter_alexandrium(sweden_phyto, "species")
+sweden_phyto <- filter_harmful_algae(sweden_phyto, species_col = "species")
 
-sweden_phyto <- full_join(sweden_phyto, alex_intermediate)
+sweden_phyto <- full_join(sweden_phyto, harmful_algae_intermediate)
 
 sweden_phys <- sweden_phys %>%
  mutate(
@@ -937,12 +962,13 @@ sweden_combined <- full_join(sweden_combined %>% ungroup() %>% dplyr::select(-la
 sweden_combined <- update_dates(sweden_combined %>% drop_na(date))
 
 sweden_combined <- sweden_combined %>%
- mutate(
-  wind_ms = rowMeans(dplyr::select(., starts_with("wind")), na.rm = TRUE),
- ) %>%
- dplyr::select(-wind_speed) %>%
-  update_dates() %>% 
- filter(is.na(parameter) | parameter != "Abundance")
+  mutate(
+    wind_ms = rowMeans(dplyr::select(., starts_with("wind")), na.rm = TRUE),
+    country = "Sweden"
+  ) %>%
+  dplyr::select(-wind_speed) %>%
+  update_dates() %>%
+  filter(is.na(parameter) | parameter != "Abundance")
 
 # Save sweden_combined as a new txt.file
 write.table(sweden_combined,
@@ -1035,23 +1061,24 @@ germany_combined <- germany_combined %>%
 # Split station names into shorter strings
 germany_combined$station <- sapply(strsplit(germany_combined$station, "_"), function(x) x[1])
 
-germany_combined <- process_alexandrium_and_introduce_probability_key(germany_combined)
+germany_combined <- germany_combined %>%
+  process_harmful_genera_comprehensive()
 
 # Only keep distinct rows as in the IOW dataset each species contains a row even though it was not detected or counted
 germany_combined <- germany_combined %>% distinct()
 
-# keep all present entries of Alexandrium
-alex_intermediate <- germany_combined %>%
+# Keep all present entries of any harmful genus; retain one "No harmful algae" row per date/station
+harmful_algae_intermediate <- germany_combined %>%
   filter(if_any(starts_with("probability"), ~ .x == "present"))
 
 germany_combined <- germany_combined %>%
- filter(species %in% c("No Alexandrium", NA)) %>%
- group_by(station, date) %>%
- arrange(cells_L) %>%
- slice_head() %>%
- ungroup()
+  filter(species %in% c("No harmful algae", NA)) %>%
+  group_by(station, date) %>%
+  arrange(cells_L) %>%
+  slice_head() %>%
+  ungroup()
 
-germany_combined <- full_join(germany_combined, alex_intermediate)
+germany_combined <- full_join(germany_combined, harmful_algae_intermediate)
 
 # Include secci depth and wind speed
 station_details <- station_details %>%
@@ -1072,19 +1099,19 @@ station_details$date <-
   as.Date(format = "%d.%m.%Y")
 
 # Average all numeric columns of the same station and date
-germany_combined <-
- germany_combined %>% ungroup() %>% group_by(
-  station,
-  date,
-  probability,
-  probability_AO,
-  probability_AT,
-  probability_AM,
-  probability_Aspp,
-  species,
-  `Depth_(start)_[m]`,
-  `Depth_(end)_[m]`
- ) %>% dplyr::summarise_if(is.numeric, mean, na.rm = T)
+germany_combined <- germany_combined %>%
+  ungroup() %>%
+  group_by(
+    station, date,
+    probability,
+    probability_Alexandrium, probability_Dinophysis, probability_Pseudonitzschia,
+    probability_Azadinium, probability_Chrysochromulina, probability_Prymnesium,
+    probability_Amphidinium, probability_Pseudochattonella, probability_Phaeocystis,
+    probability_Karlodinium, probability_Cyanobacteria,
+    harmful_algae, genus, toxin_syndrome,
+    species, `Depth_(start)_[m]`, `Depth_(end)_[m]`
+  ) %>%
+  dplyr::summarise_if(is.numeric, mean, na.rm = TRUE)
 
 # # join algae (germany_combined) and station_details dataframe
 germany_combined <-
@@ -1100,39 +1127,38 @@ germany_combined <- germany_combined %>%
  strat_index()
 
 germany_combined <- germany_combined[, ] %>%
- group_by(
-  station,
-  date,
-  probability,
-  probability_AO,
-  probability_AT,
-  probability_AM,
-  probability_Aspp,
-  strat,
-  species
- ) %>%
- filter(as.numeric(`Depth_(end)_[m]`) <= 10) %>%
- group_modify(~ dplyr::summarise(.x, across(where(is.numeric), mean, na.rm = TRUE))) %>% 
- dplyr::select(
-  -c(
-   `Longitude_(end)_[°]`,
-   `Latitude_(end)_[°]`,
-   `Depth_(end)_[m]`,
-   dens,
-   NO3
-  )
- ) %>% 
- dplyr::rename(NO3 = `NO3+NO2`, chl = Chl) %>%
- mutate(day = day(date))
+  group_by(
+    station, date,
+    probability,
+    probability_Alexandrium, probability_Dinophysis, probability_Pseudonitzschia,
+    probability_Azadinium, probability_Chrysochromulina, probability_Prymnesium,
+    probability_Amphidinium, probability_Pseudochattonella, probability_Phaeocystis,
+    probability_Karlodinium, probability_Cyanobacteria,
+    harmful_algae, genus, toxin_syndrome,
+    strat, species
+  ) %>%
+  filter(as.numeric(`Depth_(end)_[m]`) <= 10) %>%
+  group_modify(~ dplyr::summarise(.x, across(where(is.numeric), mean, na.rm = TRUE))) %>%
+  dplyr::select(
+    -c(
+      `Longitude_(end)_[°]`,
+      `Latitude_(end)_[°]`,
+      `Depth_(end)_[m]`,
+      dens,
+      NO3
+    )
+  ) %>%
+  dplyr::rename(NO3 = `NO3+NO2`, chl = Chl) %>%
+  mutate(day = day(date), country = "Germany")
 
-# If an Alexandrium entry on a given date/station combination exists only keep these and remove No Alexandrium
+# If a harmful algae entry on a given date/station combination exists, remove "No harmful algae" rows
 germany_combined <- germany_combined %>%
- group_by(station, date) %>%
- filter(
-  any(species != "No Alexandrium") & species != "No Alexandrium" |
-   all(species == "No Alexandrium")
- ) %>%
- ungroup()
+  group_by(station, date) %>%
+  filter(
+    any(species != "No harmful algae") & species != "No harmful algae" |
+      all(species == "No harmful algae")
+  ) %>%
+  ungroup()
 
 # export data
 write.table(germany_combined,
@@ -1215,32 +1241,100 @@ all_data <- all_data %>% mutate(limiting_conditions = as.factor(
  )
 ))
 
-all_data <- all_data %>%
- group_by(
-  combined_station,
-  date,
-  probability,
-  probability_AM,
-  probability_AO,
-  probability_Aspp,
-  probability_AT,
-  logistic,
-  species
- ) %>%
- dplyr::summarize(
-  strat = combine_strat(strat),
-  limiting_conditions = combine_limiting_conditions(limiting_conditions),
-  across(where(is.numeric), \(x) mean(x))
- )
-
-# introduce logistic column (0 = absent and 1 = present) for logistic regression
-all_data <- all_data %>%
+# Step 1: Aggregate genus-level probabilities, cell concentrations and categorical fields per combined_station/date
+all_data_probs <- all_data %>%
+  group_by(combined_station, date) %>%
+  summarise(
+    # Overall harmful algae presence
+    probability = case_when(
+      any(probability == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability))                     ~ NA_character_,
+      TRUE                                        ~ "absent"
+    ),
+    # Individual genus probabilities
+    probability_Alexandrium = case_when(
+      any(probability_Alexandrium == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Alexandrium))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Dinophysis = case_when(
+      any(probability_Dinophysis == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Dinophysis))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Pseudonitzschia = case_when(
+      any(probability_Pseudonitzschia == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Pseudonitzschia))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Azadinium = case_when(
+      any(probability_Azadinium == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Azadinium))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Chrysochromulina = case_when(
+      any(probability_Chrysochromulina == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Chrysochromulina))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Prymnesium = case_when(
+      any(probability_Prymnesium == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Prymnesium))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Amphidinium = case_when(
+      any(probability_Amphidinium == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Amphidinium))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Pseudochattonella = case_when(
+      any(probability_Pseudochattonella == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Pseudochattonella))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Phaeocystis = case_when(
+      any(probability_Phaeocystis == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Phaeocystis))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Karlodinium = case_when(
+      any(probability_Karlodinium == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Karlodinium))                     ~ NA_character_, TRUE ~ "absent"),
+    probability_Cyanobacteria = case_when(
+      any(probability_Cyanobacteria == "present", na.rm = TRUE) ~ "present",
+      all(is.na(probability_Cyanobacteria))                     ~ NA_character_, TRUE ~ "absent"),
+    # Genus-level cell concentration totals
+    cells_L_Alexandrium      = sum(ifelse(genus == "Alexandrium",       cells_L, 0), na.rm = TRUE),
+    cells_L_Dinophysis       = sum(ifelse(genus == "Dinophysis",        cells_L, 0), na.rm = TRUE),
+    cells_L_Pseudonitzschia  = sum(ifelse(genus == "Pseudo-nitzschia",  cells_L, 0), na.rm = TRUE),
+    cells_L_Azadinium        = sum(ifelse(genus == "Azadinium",         cells_L, 0), na.rm = TRUE),
+    cells_L_Chrysochromulina = sum(ifelse(genus == "Chrysochromulina",  cells_L, 0), na.rm = TRUE),
+    cells_L_Prymnesium       = sum(ifelse(genus == "Prymnesium",        cells_L, 0), na.rm = TRUE),
+    cells_L_Amphidinium      = sum(ifelse(genus == "Amphidinium",       cells_L, 0), na.rm = TRUE),
+    cells_L_Pseudochattonella = sum(ifelse(genus == "Pseudochattonella", cells_L, 0), na.rm = TRUE),
+    cells_L_Phaeocystis      = sum(ifelse(genus == "Phaeocystis",       cells_L, 0), na.rm = TRUE),
+    cells_L_Karlodinium      = sum(ifelse(genus == "Karlodinium",       cells_L, 0), na.rm = TRUE),
+    cells_L_Cyanobacteria    = sum(ifelse(genus == "Cyanobacteria",     cells_L, 0), na.rm = TRUE),
+    # Categorical / metadata fields
+    strat               = combine_strat(strat),
+    limiting_conditions = combine_limiting_conditions(limiting_conditions),
+    across(c(day, month, year, doy, species, genus, toxin_syndrome, country), first),
+    .groups = "drop"
+  ) %>%
   mutate(
     logistic = case_when(
-      is.na(probability) ~ NA_real_,      
+      is.na(probability) ~ NA_real_,
       probability == "absent" ~ 0,
       TRUE ~ 1
     )
+  )
+
+# Step 2: Average all numeric environmental variables per combined_station/date
+all_data_num <- all_data %>%
+  group_by(combined_station, date) %>%
+  summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop") %>%
+  dplyr::select(-any_of(c("day", "month", "year", "doy", "logistic",
+    "cells_L_Alexandrium", "cells_L_Dinophysis", "cells_L_Pseudonitzschia",
+    "cells_L_Azadinium", "cells_L_Chrysochromulina", "cells_L_Prymnesium",
+    "cells_L_Amphidinium", "cells_L_Pseudochattonella", "cells_L_Phaeocystis",
+    "cells_L_Karlodinium", "cells_L_Cyanobacteria")))
+
+# Step 3: Join and compute risk classification levels
+all_data <- left_join(all_data_probs, all_data_num, by = c("combined_station", "date")) %>%
+  mutate(
+    risk_level_Alexandrium      = case_when(cells_L_Alexandrium      >= 10000 ~ "High", cells_L_Alexandrium      >= 1000 ~ "Moderate", cells_L_Alexandrium      > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Dinophysis       = case_when(cells_L_Dinophysis       >= 10000 ~ "High", cells_L_Dinophysis       >= 1000 ~ "Moderate", cells_L_Dinophysis       > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Pseudonitzschia  = case_when(cells_L_Pseudonitzschia  >= 10000 ~ "High", cells_L_Pseudonitzschia  >= 1000 ~ "Moderate", cells_L_Pseudonitzschia  > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Azadinium        = case_when(cells_L_Azadinium        >= 10000 ~ "High", cells_L_Azadinium        >= 1000 ~ "Moderate", cells_L_Azadinium        > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Chrysochromulina = case_when(cells_L_Chrysochromulina >= 10000 ~ "High", cells_L_Chrysochromulina >= 1000 ~ "Moderate", cells_L_Chrysochromulina > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Prymnesium       = case_when(cells_L_Prymnesium       >= 10000 ~ "High", cells_L_Prymnesium       >= 1000 ~ "Moderate", cells_L_Prymnesium       > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Amphidinium      = case_when(cells_L_Amphidinium      >= 10000 ~ "High", cells_L_Amphidinium      >= 1000 ~ "Moderate", cells_L_Amphidinium      > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Pseudochattonella = case_when(cells_L_Pseudochattonella >= 10000 ~ "High", cells_L_Pseudochattonella >= 1000 ~ "Moderate", cells_L_Pseudochattonella > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Phaeocystis      = case_when(cells_L_Phaeocystis      >= 10000 ~ "High", cells_L_Phaeocystis      >= 1000 ~ "Moderate", cells_L_Phaeocystis      > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Karlodinium      = case_when(cells_L_Karlodinium      >= 10000 ~ "High", cells_L_Karlodinium      >= 1000 ~ "Moderate", cells_L_Karlodinium      > 0 ~ "Low", TRUE ~ "None"),
+    risk_level_Cyanobacteria    = case_when(cells_L_Cyanobacteria    >= 10000 ~ "High", cells_L_Cyanobacteria    >= 1000 ~ "Moderate", cells_L_Cyanobacteria    > 0 ~ "Low", TRUE ~ "None")
   ) %>%
   convert_as_factor(probability, logistic) %>%
   update_dates()
