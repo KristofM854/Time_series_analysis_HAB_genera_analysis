@@ -1247,44 +1247,44 @@ all_data_probs <- all_data %>%
   dplyr::summarise(
     # Overall harmful algae presence
     probability = case_when(
-      any(probability == "present", na.rm = TRUE) ~ "present",
+      any(probability == "present", na.rm = TRUE) ~ 1,
       all(is.na(probability))                     ~ NA_character_,
-      TRUE                                        ~ "absent"
+      TRUE                                        ~ 0
     ),
     # Individual genus probabilities
     probability_Alexandrium = case_when(
-      any(probability_Alexandrium == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Alexandrium))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Alexandrium == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Alexandrium))                     ~ NA_character_, TRUE ~ 0),
     probability_Dinophysis = case_when(
-      any(probability_Dinophysis == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Dinophysis))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Dinophysis == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Dinophysis))                     ~ NA_character_, TRUE ~ 0),
     probability_Pseudonitzschia = case_when(
-      any(probability_Pseudonitzschia == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Pseudonitzschia))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Pseudonitzschia == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Pseudonitzschia))                     ~ NA_character_, TRUE ~ 0),
     probability_Azadinium = case_when(
-      any(probability_Azadinium == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Azadinium))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Azadinium == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Azadinium))                     ~ NA_character_, TRUE ~ 0),
     probability_Chrysochromulina = case_when(
-      any(probability_Chrysochromulina == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Chrysochromulina))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Chrysochromulina == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Chrysochromulina))                     ~ NA_character_, TRUE ~ 0),
     probability_Prymnesium = case_when(
-      any(probability_Prymnesium == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Prymnesium))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Prymnesium == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Prymnesium))                     ~ NA_character_, TRUE ~ 0),
     probability_Amphidinium = case_when(
-      any(probability_Amphidinium == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Amphidinium))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Amphidinium == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Amphidinium))                     ~ NA_character_, TRUE ~ 0),
     probability_Pseudochattonella = case_when(
-      any(probability_Pseudochattonella == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Pseudochattonella))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Pseudochattonella == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Pseudochattonella))                     ~ NA_character_, TRUE ~ 0),
     probability_Phaeocystis = case_when(
-      any(probability_Phaeocystis == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Phaeocystis))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Phaeocystis == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Phaeocystis))                     ~ NA_character_, TRUE ~ 0),
     probability_Karlodinium = case_when(
-      any(probability_Karlodinium == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Karlodinium))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Karlodinium == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Karlodinium))                     ~ NA_character_, TRUE ~ 0),
     probability_Cyanobacteria = case_when(
-      any(probability_Cyanobacteria == "present", na.rm = TRUE) ~ "present",
-      all(is.na(probability_Cyanobacteria))                     ~ NA_character_, TRUE ~ "absent"),
+      any(probability_Cyanobacteria == 1, na.rm = TRUE) ~ 1,
+      all(is.na(probability_Cyanobacteria))                     ~ NA_character_, TRUE ~ 0),
     # Genus-level cell concentration totals
     cells_L_Alexandrium      = sum(ifelse(genus == "Alexandrium",       cells_L, 0), na.rm = TRUE),
     cells_L_Dinophysis       = sum(ifelse(genus == "Dinophysis",        cells_L, 0), na.rm = TRUE),
@@ -1306,7 +1306,7 @@ all_data_probs <- all_data %>%
   mutate(
     logistic = case_when(
       is.na(probability) ~ NA_real_,
-      probability == "absent" ~ 0,
+      probability == 0 ~ 0,
       TRUE ~ 1
     )
   )
