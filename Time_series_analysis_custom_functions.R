@@ -78,7 +78,7 @@ process_harmful_genera_comprehensive <- function(df) {
       # Genus classification: comprehensive pattern matching
       # Pseudochattonella placed before Pseudo-nitzschia to prevent "pseud" prefix false-positives
       genus = case_when(
-        str_detect(tolower(species), "alexandrium|alex min|alex ost|alex pse|alex tam|alexandz") ~ "Alexandrium",
+        str_detect(tolower(species), "alexandrium|alex min|alex ost|alex pse|alex tam|alexandz|alex exc") ~ "Alexandrium",
         str_detect(tolower(species), "dinophysis")                                               ~ "Dinophysis",
         str_detect(tolower(species), "pseudochattonella|pseudochat|pseudo chat")                 ~ "Pseudochattonella",
         str_detect(tolower(species), "pseudo-nitzschia|pseudonitzschia|pseudo nitzschia")        ~ "Pseudo-nitzschia",
