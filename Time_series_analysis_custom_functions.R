@@ -71,72 +71,66 @@ strat_index <- function(df) {
   ungroup()
 }
 
-####### Function to introduce probability key (species absent or present) ####### 
-process_alexandrium_and_introduce_probability_key <-
-  function(df) {
-    df <- df %>%
-      mutate(
-        probability = case_when(
-          species == "Alexandrium pseudogonyaulax" &
-            !is.na(cells_L) & cells_L > 0 ~ "present",
-          is.na(species) | is.na(cells_L) ~ NA_character_,
-          TRUE ~ "absent"
-        ),
-        probability_AO = case_when(
-          species == "Alexandrium ostenfeldii" &
-            !is.na(cells_L) & cells_L > 0 ~ "present",
-          is.na(species) | is.na(cells_L) ~ NA_character_,
-          TRUE ~ "absent"
-        ),
-        probability_AT = case_when(
-          species == "Alexandrium tamarense" &
-            !is.na(cells_L) & cells_L > 0 ~ "present",
-          is.na(species) | is.na(cells_L) ~ NA_character_,
-          TRUE ~ "absent"
-        ),
-        probability_AM = case_when(
-          species == "Alexandrium minutum" &
-            !is.na(cells_L) & cells_L > 0 ~ "present",
-          is.na(species) | is.na(cells_L) ~ NA_character_,
-          TRUE ~ "absent"
-        ),
-        species = case_when(
-          species == "Alexandrium pseudogonyaulax" ~ "Alexandrium pseudogonyaulax",
-          species == "Alexandrium ostenfeldii" ~ "Alexandrium ostenfeldii",
-          species == "Alexandrium tamarense" ~ "Alexandrium tamarense",
-          species == "Alexandrium minutum" ~ "Alexandrium minutum",
-          str_detect(species, "Alexandrium") ~ "Alexandrium spp.",
-          is.na(species)  ~ NA_character_,
-          TRUE ~ "No Alexandrium"
-        )
-      )
-    
-    df <- df %>%
-      mutate(
-        probability_Aspp = case_when(
-          str_detect(species, "Alexandrium spp.") &
-            !is.na(cells_L) & cells_L > 0 ~ "present",
-          is.na(species) | is.na(cells_L) ~ NA_character_,
-          TRUE ~ "absent"
-        )
-      )
-    return(df)
-  }
+####### Function to introduce genus-level probability keys for all harmful algal genera #######
+process_harmful_genera_probabilities <- function(df) {
+  df <- df %>%
+    mutate(
+      # Create binary probability keys for all harmful genera (using comprehensive pattern matching)
+      probability_Alexandrium = case_when(
+        str_detect(tolower(species), "alexandrium") & !is.na(cells_L) & cells_L > 0 ~ "present",
+        is.na(species) | is.na(cells_L) ~ NA_character_,
+        TRUE ~ "absent"
+      ),
+      probability_Dinophysis = case_when(
+        str_detect(tolower(species), "dinophysis") & !is.na(cells_L) & cells_L > 0 ~ "present",
+        is.na(species) | is.na(cells_L) ~ NA_character_,
+        TRUE ~ "absent"
+      ),
+      probability_Pseudonitzschia = case_when(
+        str_detect(tolower(species), "pseudo-nitzschia|pseudonitzschia|pseudo nitzschia") & !is.na(cells_L) & cells_L > 0 ~ "present",
+        is.na(species) | is.na(cells_L) ~ NA_character_,
+        TRUE ~ "absent"
+      ),
+      probability_Azadinium = case_when(
+        str_detect(tolower(species), "azadinium") & !is.na(cells_L) & cells_L > 0 ~ "present",
+        is.na(species) | is.na(cells_L) ~ NA_character_,
+        TRUE ~ "absent"
+      ),
+      probability_Chrysochromulina = case_when(
+        str_detect(tolower(species), "chrysochromulina|chryso chromulina") & !is.na(cells_L) & cells_L > 0 ~ "present",
+        is.na(species) | is.na(cells_L) ~ NA_character_,
+        TRUE ~ "absent"
+      ),
+      probability_Prymnesium = case_when(
+        str_detect(tolower(species), "prymnesium") & !is.na(cells_L) & cells_L > 0 ~ "present",
+        is.na(species) | is.na(cells_L) ~ NA_character_,
+        TRUE ~ "absent"
+      ),
 
-####### Function retaining only a single 'No Alexandrium' entry per day ####### 
-filter_alexandrium <- function(df, species_col, name = "Alexandrium pseudogonyaulax",
-                               grouping_cols = c("station", "date")) {
-  df %>%
-    filter(.data[[species_col]] %in% c("No Alexandrium", NA, name)) %>%
-    group_by(across(all_of(grouping_cols))) %>%
-    slice({
-      if (any(probability == "present", na.rm = TRUE)) {
-        which(probability == "present")
-      } else {
-        1
-      }
-    }) %>%
-    ungroup()
+      # Update species classification for filtering
+      species = case_when(
+        harmful_algae == TRUE ~ species,
+        is.na(species) ~ NA_character_,
+        TRUE ~ "No harmful algae"
+      )
+    )
+  return(df)
+}
+
+####### Function retaining only a single 'No harmful algae' entry per day per station #######
+filter_harmful_algae <- function(df, species_col = "species") {
+  harmful_species <- df %>%
+    filter(!.data[[species_col]] %in% c("No harmful algae")) %>%
+    filter(harmful_algae == TRUE)
+
+  no_harmful_species <- df %>%
+    filter(.data[[species_col]] == "No harmful algae") %>%
+    distinct(date, station, .keep_all = TRUE)
+
+  final_df <- bind_rows(harmful_species, no_harmful_species) %>%
+    arrange(date, station)
+
+  return(final_df)
 }
 
 ####### Function to update day, month, year and doy from date ####### 
