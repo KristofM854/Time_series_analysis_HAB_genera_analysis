@@ -113,68 +113,68 @@ process_harmful_genera_comprehensive <- function(df) {
       )
     ) %>%
     mutate(
-      # Overall harmful algae probability (used by downstream Sweden/Germany sections)
+      # Overall harmful algae probability: 1 = present, 0 = absent, NA = missing data
       probability = case_when(
-        harmful_algae == TRUE & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L)                        ~ NA_character_,
-        TRUE                                                    ~ "absent"
+        harmful_algae == TRUE & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L)                        ~ NA_integer_,
+        TRUE                                                    ~ 0L
       ),
 
-      # Binary presence/absence per genus (derived from genus column for efficiency)
+      # Binary 1/0 per genus (1 = present, 0 = absent, NA = missing data)
       probability_Alexandrium = case_when(
-        genus == "Alexandrium"       & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Alexandrium"       & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Dinophysis = case_when(
-        genus == "Dinophysis"        & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Dinophysis"        & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Pseudonitzschia = case_when(
-        genus == "Pseudo-nitzschia"  & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Pseudo-nitzschia"  & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Azadinium = case_when(
-        genus == "Azadinium"         & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Azadinium"         & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Chrysochromulina = case_when(
-        genus == "Chrysochromulina"  & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Chrysochromulina"  & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Prymnesium = case_when(
-        genus == "Prymnesium"        & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Prymnesium"        & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Amphidinium = case_when(
-        genus == "Amphidinium"       & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Amphidinium"       & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Pseudochattonella = case_when(
-        genus == "Pseudochattonella" & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Pseudochattonella" & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Phaeocystis = case_when(
-        genus == "Phaeocystis"       & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Phaeocystis"       & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Karlodinium = case_when(
-        genus == "Karlodinium"       & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Karlodinium"       & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
       probability_Cyanobacteria = case_when(
-        genus == "Cyanobacteria"     & !is.na(cells_L) & cells_L > 0 ~ "present",
-        is.na(species) | is.na(cells_L) ~ NA_character_,
-        TRUE ~ "absent"
+        genus == "Cyanobacteria"     & !is.na(cells_L) & cells_L > 0 ~ 1L,
+        is.na(species) | is.na(cells_L) ~ NA_integer_,
+        TRUE ~ 0L
       ),
 
       # Rename non-HAB species for downstream filtering
