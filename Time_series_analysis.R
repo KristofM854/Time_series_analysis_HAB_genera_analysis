@@ -283,10 +283,11 @@ norway_combined_probs <- norway_combined %>%
   )
 
 # Step 2: Average all numeric environmental variables per date/station
+# Probability columns are excluded here — they are already correctly aggregated in norway_combined_probs
 norway_combined_num <- norway_combined %>%
   group_by(date, station) %>%
   dplyr::summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
-  dplyr::select(-any_of(c("day", "month", "year", "doy", "logistic",
+  dplyr::select(-starts_with("probability"), -any_of(c("day", "month", "year", "doy", "logistic",
     "cells_L_Alexandrium", "cells_L_Dinophysis", "cells_L_Pseudonitzschia",
     "cells_L_Azadinium", "cells_L_Chrysochromulina", "cells_L_Prymnesium",
     "cells_L_Amphidinium", "cells_L_Pseudochattonella", "cells_L_Phaeocystis",
@@ -1281,10 +1282,11 @@ all_data_probs <- all_data %>%
   mutate(logistic = probability)  # alias kept for downstream compatibility
 
 # Step 2: Average all numeric environmental variables per combined_station/date
+# Probability columns are excluded here — they are already correctly aggregated in all_data_probs
 all_data_num <- all_data %>%
   group_by(combined_station, date) %>%
   dplyr::summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop") %>%
-  dplyr::select(-any_of(c("day", "month", "year", "doy", "logistic",
+  dplyr::select(-starts_with("probability"), -any_of(c("day", "month", "year", "doy", "logistic",
     "cells_L_Alexandrium", "cells_L_Dinophysis", "cells_L_Pseudonitzschia",
     "cells_L_Azadinium", "cells_L_Chrysochromulina", "cells_L_Prymnesium",
     "cells_L_Amphidinium", "cells_L_Pseudochattonella", "cells_L_Phaeocystis",
