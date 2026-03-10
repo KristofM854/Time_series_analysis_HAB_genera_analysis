@@ -285,7 +285,7 @@ norway_combined_probs <- norway_combined %>%
 # Step 2: Average all numeric environmental variables per date/station
 norway_combined_num <- norway_combined %>%
   group_by(date, station) %>%
-  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  dplyr::summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
   dplyr::select(-any_of(c("day", "month", "year", "doy", "logistic",
     "cells_L_Alexandrium", "cells_L_Dinophysis", "cells_L_Pseudonitzschia",
     "cells_L_Azadinium", "cells_L_Chrysochromulina", "cells_L_Prymnesium",
@@ -1283,7 +1283,7 @@ all_data_probs <- all_data %>%
 # Step 2: Average all numeric environmental variables per combined_station/date
 all_data_num <- all_data %>%
   group_by(combined_station, date) %>%
-  summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop") %>%
+  dplyr::summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop") %>%
   dplyr::select(-any_of(c("day", "month", "year", "doy", "logistic",
     "cells_L_Alexandrium", "cells_L_Dinophysis", "cells_L_Pseudonitzschia",
     "cells_L_Azadinium", "cells_L_Chrysochromulina", "cells_L_Prymnesium",
@@ -2373,7 +2373,7 @@ boot_all <- bind_rows(boot_results)
 ci_summary <- boot_all %>%
   pivot_longer(cols = c("t1", "t2", "p_max")) %>%
   group_by(station, name) %>%
-  summarise(
+  dplyr::summarise(
     mean = mean(value, na.rm = TRUE),
     lower = quantile(value, 0.025, na.rm = TRUE),
     upper = quantile(value, 0.975, na.rm = TRUE),

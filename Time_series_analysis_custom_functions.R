@@ -78,7 +78,7 @@ process_harmful_genera_comprehensive <- function(df) {
       # Genus classification: comprehensive pattern matching
       # Pseudochattonella placed before Pseudo-nitzschia to prevent "pseud" prefix false-positives
       genus = case_when(
-        str_detect(tolower(species), "alexandrium|alex min|alex ost|alex pse|alex tam|alexandz") ~ "Alexandrium",
+        str_detect(tolower(species), "alexandrium|alex min|alex ost|alex pse|alex tam|alexandz|alex exc") ~ "Alexandrium",
         str_detect(tolower(species), "dinophysis")                                               ~ "Dinophysis",
         str_detect(tolower(species), "pseudochattonella|pseudochat|pseudo chat")                 ~ "Pseudochattonella",
         str_detect(tolower(species), "pseudo-nitzschia|pseudonitzschia|pseudo nitzschia")        ~ "Pseudo-nitzschia",
@@ -91,7 +91,7 @@ process_harmful_genera_comprehensive <- function(df) {
         str_detect(tolower(species), "nodularia|aphanizomenon|dolichospermum|anabaena|microcystis|planktothrix|woronichinia|cuspidothrix") ~ "Cyanobacteria",
         TRUE ~ "Other"
       ),
-
+      
       # Toxin syndrome classification
       toxin_syndrome = case_when(
         genus == "Alexandrium"                                                                    ~ "PSP",
@@ -104,7 +104,7 @@ process_harmful_genera_comprehensive <- function(df) {
         genus == "Cyanobacteria"                                                                  ~ "Multiple_toxins",
         TRUE ~ "Other"
       ),
-
+      
       # Harmful algae flag
       harmful_algae = genus %in% c(
         "Alexandrium", "Dinophysis", "Pseudo-nitzschia", "Azadinium",
@@ -176,7 +176,7 @@ process_harmful_genera_comprehensive <- function(df) {
         is.na(species) | is.na(cells_L) ~ NA_integer_,
         TRUE ~ 0L
       ),
-
+      
       # Rename non-HAB species for downstream filtering
       species = case_when(
         harmful_algae == TRUE ~ species,
