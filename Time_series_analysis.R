@@ -1347,31 +1347,23 @@ all_data <- all_data %>%
 # 1. sampling in the years of 2010:2020 with maximum two years missing;
 # 2. sampling in the month 4-10 with maximum of three unique month
 # 3. minimum of 20 observations per year) ######
-stations_to_keep <- all_data %>%
- filter(year %in% 2010:2020, month %in% 5:9) %>%
- drop_na(probability) %>% 
- group_by(combined_station) %>%
- dplyr::summarise(unique_years = n_distinct(year),
-          unique_month = n_distinct(month)) %>% 
- filter(unique_years >= 8 &
-      unique_month >= 3) %>% 
- pull(combined_station)
+# Per-genus station sets: stations that meet both filtering criteria for each genus
+# get_qualifying_stations() is defined in Time_series_analysis_custom_functions.R
+qualifying_stations <- setNames(
+  lapply(genera_of_interest, function(g) {
+    get_qualifying_stations(all_data, prob_col_name(g))
+  }),
+  genera_of_interest
+)
 
-stations_to_keep2 <- all_data %>%
- filter(year %in% 2010:2020) %>%
- drop_na(probability) %>% 
- group_by(combined_station, year) %>%
- dplyr::summarise(unique_doy = n_distinct(doy)) %>% 
- filter(unique_doy >= 10) %>% 
- ungroup() %>%
- pull(combined_station) %>%
- unique()
+# Overall qualifying stations (any harmful algae; backward-compatible)
+common_stations <- get_qualifying_stations(all_data, "probability")
 
-# Find stations that meet both filtering criteria and remove stations from df that do not fit the criteria
-common_stations <- intersect(stations_to_keep, stations_to_keep2)
+# Include any station that qualifies for at least one genus
+all_qualifying <- unique(c(common_stations, unlist(qualifying_stations)))
 
 filtered_data <- all_data %>%
- filter(combined_station %in% common_stations)
+ filter(combined_station %in% all_qualifying)
 
 # Create nutrient and wind lagged columns 
 # Define parameters of interest
@@ -1422,15 +1414,17 @@ filtered_data <- filtered_data %>%
  dplyr::select(-lat, -lon) %>%
  left_join(station_means, by = "station")
 
-# Change absent/present in probability columns to 0/1 to match the format requirements of the GLMs and GAMs
+# Ensure all probability columns remain integer (1L/0L/NA_integer_) for direct use in GLMs/GAMs.
+# The upstream pipeline already produces integers; this guard handles any character "absent"/"present"
+# that may survive a file round-trip (e.g., write_delim / read_delim).
+# GAM/GLM formulas wrap the response in factor() at the call site, so we keep integers here.
 filtered_data <- filtered_data %>%
-  mutate_at(vars(starts_with("probability")),
-            ~ case_when(
-              is.na(.) ~ NA_real_,
-              . == "absent" ~ 0,
-              TRUE ~ 1
-            ) %>% factor(levels = c(0, 1))
-  )
+  mutate(across(starts_with("probability"), ~ case_when(
+    is.na(.)                                  ~ NA_integer_,
+    . == "absent"  | as.integer(.) == 0L ~ 0L,
+    . == "present" | as.integer(.) == 1L ~ 1L,
+    TRUE                                      ~ as.integer(.)
+  )))
 
 # Group by station and year, then count the number of "present" observations in probability column
 counts_overview <- all_data %>%
@@ -1712,267 +1706,102 @@ ggsave(
  units = "cm"
 )
 
-# construct 10 year plot with mean cell densities of each species including the amount of present observations ####### 
-mean_cell_dens <- filtered_data %>%
- filter(species != "No Alexandrium" &
-      species != "Alexandrium minutum") %>%
- drop_na(cells_L) %>%
- group_by(station, year2, species, lat, lon) %>%
- drop_na(cells_L) %>%
- dplyr::summarise(cells_L = mean(cells_L, na.rm = TRUE), n = n()) %>%
- drop_na(year2)
+####### Cell density plots – one per genus, using cells_L_<Genus> columns #######
+# Shared plot parameters
+breaks_dens    <- c(10^0, 10^1, 10^2, 10^3, 10^4, 10^5)
+log_breaks     <- log(breaks_dens)
+custom_labels  <- scales::scientific_format()(breaks_dens)
+custom_breaks  <- c(1, 5, 10, 20, 40, 65)
+custom_sizes   <- c(1, 5, 10, 20, 40, 65)
 
-mean_cell_dens <-
- full_join(mean_cell_dens, unique_stations) %>% 
- mutate(log_cells_L = log(cells_L))
+coordinates_dens <- data.frame(lon = c(7.5, 7.5, 20.5, 20.5),
+                                lat = c(53.5, 60.5, 60.5, 53.5))
 
+# Ensure maps directory exists
+dir.create(file.path(script_dir, "maps"), showWarnings = FALSE, recursive = TRUE)
 
-####### Cell density plot preparation ####### 
-# Specific breaks and their log-transformed values
-breaks <- c(10^0, 10^1, 10^2, 10^3, 10^4, 10^5)
-log_breaks <- log(breaks)
+walk(genera_of_interest, function(genus) {
+  cell_col <- cells_col_name(genus)
+  if (!cell_col %in% colnames(filtered_data)) return(invisible(NULL))
 
-custom_labels <- scales::scientific_format()(breaks)
+  genus_dens <- filtered_data %>%
+    filter(.data[[cell_col]] > 0) %>%
+    drop_na(year2) %>%
+    group_by(station, year2, lat, lon) %>%
+    dplyr::summarise(
+      cells_L = mean(.data[[cell_col]], na.rm = TRUE),
+      n       = n(),
+      .groups = "drop"
+    ) %>%
+    full_join(unique_stations %>% dplyr::select(station, station_number), by = "station") %>%
+    mutate(log_cells_L = log(cells_L))
 
-custom_breaks <-
- c(1, 5, 10, 20, 40, 65) 
-custom_sizes <-
- c(1, 5, 10, 20, 40, 65) 
+  if (nrow(genus_dens) == 0) return(invisible(NULL))
 
-coordinates2 <-
- data.frame(lon = c(7.5, 7.5, 20.5, 20.5), 
-            lat = c(53.5, 60.5, 60.5, 53.5))
+  # Determine whether this is the last genus (to show axes) or not
+  is_last <- genus == tail(genera_of_interest, 1)
 
-custom_colors <-
- c(viridis(256)[1:200], colorRampPalette(c("orange", "red"))(56))
-
-species_vec <- c(
- "Alexandrium pseudogonyaulax",
- "Alexandrium ostenfeldii",
- "Alexandrium tamarense",
- "Alexandrium spp."
-)
-
-plot_list <- list()
-
-####### Cell density plot ####### 
-walk(species_vec, function(species_name) {
- 
- species_data <- mean_cell_dens %>%
-  filter(species == species_name) %>%
-  drop_na(n)
- 
- plot2 <- basemap(
-  data = coordinates2,
-  bathymetry = FALSE,
-  legends = FALSE,
-  land.col = "grey75",
-  rotate = TRUE
- ) +
-  ggspatial::geom_spatial_point(
-   data = species_data,
-   aes(x = lon, y = lat, col = log_cells_L, size = n)
-  ) +
-  facet_grid(. ~ year2) +
-  scale_color_gradientn(
-   colors = viridisLite::plasma(200),
-   limits = log(c(1, 10^5)),
-   breaks = log_breaks,
-   labels = custom_labels,
-   name = stringr::str_wrap("Cell density <br> (cells L<sup>-1</sup>)", width = 2)
-  ) +
-  labs(x = NULL, y = NULL) +
-  theme_minimal() +
-  scale_size_area(
-   limits = c(0, 65),
-   breaks = custom_breaks,
-   max_size = 6,
-   labels = custom_sizes,
-   name = stringr::str_wrap("Number of <br> present <br> observations", width = 2)
-  ) +
-  theme(
-   panel.grid.major = element_blank(),
-   panel.grid.minor = element_blank(),
-   panel.background = element_rect(fill = 'white'),
-   legend.title = element_markdown(hjust = 0.5, size = 12, margin = margin(b = 10)),
-   strip.background = element_blank(),
-   axis.text = element_markdown(size = 12),
-   axis.title = element_markdown(size = 12),
-   plot.title = element_blank(),
-   axis.text.x = element_blank(),
-   axis.ticks.x = element_blank(),
-   axis.title.x = element_blank(),
-   strip.text = element_blank(),
-   axis.ticks.y = element_blank(),
-   axis.text.y = element_blank()
-  ) +
-  scale_x_continuous(breaks = c(8, 12, 16, 20), labels = c("8", "12", "16", "20"),
-                     expand = c(0, 0)) +
-  scale_y_continuous(breaks = c(54, 56, 58, 60), labels = c("54", "56", "58", "60"),
-                     expand = c(0, 0))
- 
- if (species_name %in% c("Alexandrium pseudogonyaulax", "Alexandrium spp.", "Alexandrium ostenfeldii")) {
-  plot2 <- plot2 + theme(legend.position = "none")
- }
- if (species_name == "Alexandrium pseudogonyaulax") {
-  plot2 <- plot2 +
-   theme(strip.text = element_markdown(size = 12, vjust = 1),
-      plot.margin = unit(c(0, 0, -2, 0), "cm"))
- }
- if (species_name %in% c("Alexandrium ostenfeldii", "Alexandrium tamarense")) {
-  plot2 <- plot2 + theme(plot.margin = unit(c(-2, 0, -2, 0), "cm"))
- }
- if (species_name == "Alexandrium spp.") {
-  plot2 <- plot2 +
-   labs(title = "", x = "Longitude (°E)", y = "Latitude (°N)") +
-   theme(
-    axis.text.x = element_markdown(size = 12),
-    axis.ticks.x = element_line(),
-    axis.title.x = element_markdown(size = 12),
-    axis.ticks.y = element_line(),
-    axis.text.y = element_markdown(size = 12),
-    axis.title.y = element_markdown(size = 12),
-    plot.margin = unit(c(-2, 0, 0, 0), "cm")
-   )
- }
- plot_list[[species_name]] <<- plot2
-})
-
-# Combine the plots using patchwork
-Alex_dens <-
- wrap_plots(plot_list) + plot_layout(axis_titles = "collect", ncol = 1) +
- guides(color = guide_colorbar(order = 1), size = guide_legend(order = 2))
-
-ggsave(
- "AP_cell_densities.png",
- Alex_dens,
- path = paste0(script_dir, "/", "maps"),
- dpi = 300,
- width = 10,
- height = 6,
- units = "in"
-)
-
-####### Cell density plot 2 ####### 
-mean_cell_dens <- filtered_data %>%
- filter(species %in% c("Alexandrium pseudogonyaulax", "No Alexandrium")) %>%
- drop_na(cells_L) %>%
- group_by(station, year, species, lat, lon) %>%
- dplyr::summarise(cells_L = mean(cells_L, na.rm = TRUE), n = n()) 
-
-mean_cell_dens <-
- full_join(mean_cell_dens, unique_stations) %>% 
- mutate(log_cells_L = log(cells_L))
-
-species_data <-
-  mean_cell_dens %>% 
-  filter(year >= 2006 &
-           year <= 2011 ) %>% 
-  drop_na(n, probability)
-
-breaks <- c(10 ^ 1, 10 ^ 2, 10 ^ 3, 10 ^ 4, 10 ^ 5)
-log_breaks <- log(breaks)
-custom_labels <- scales::scientific_format()(breaks)
-
-custom_breaks2 <- c(2, 6, 10) 
-custom_sizes2 <-  c(2, 6, 10)  
-
-species_data <- species_data %>%
-  group_by(year, station) %>%
-  filter(!("Alexandrium pseudogonyaulax" %in% species & species == "No Alexandrium")) %>%
-  ungroup()
-
-cell_dens_plot <-
-  basemap(
-    data = coordinates2,
-    bathymetry = F,
-    legends = F,
+  plot2 <- basemap(
+    data     = coordinates_dens,
+    bathymetry = FALSE,
+    legends  = FALSE,
     land.col = "grey75",
-    rotate = T
+    rotate   = TRUE
   ) +
-  ggspatial::geom_spatial_point(
-    data = subset(species_data, species == "Alexandrium pseudogonyaulax"),
-    aes(
-      x = lon,
-      y = lat,
-      col = log_cells_L,
-      size = n
-    )
-  ) +
-  ggspatial::geom_spatial_point(
-    data = subset(species_data, species == "No Alexandrium"),
-    aes(
-      x = lon,
-      y = lat
-    ),
-    shape = 1, 
-    size = 1, 
-    color = "black",
-    stroke = 0.6        
-  ) +
-  facet_wrap( ~ year) +
-  scale_color_gradientn(
-    colors = viridisLite::plasma(200),
-    limits = log(c(10, 10^5)),
-    breaks = log_breaks,
-    labels = custom_labels,
-    name = stringr::str_wrap("Cell density <br> (cells L<sup>-1</sup>)", width = 2)
-  ) +
-  labs(x = "Longitude (°E)", y = "Latitude (°N)") +
-  theme_minimal() +
-  scale_size_area(
-    limits = c(0, 10),
-    breaks = custom_breaks2,
-    max_size = 6,
-    labels = custom_sizes2,
-    name = stringr::str_wrap("Number of <br> present <br> observations", width = 2)
-  ) +
-  theme(
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    panel.background = element_rect(fill = 'white'),
-    legend.title = element_markdown(
-      hjust = 0.5,
-      size = 10,
-      margin = margin(b = 10)
-    ),
-    strip.background = element_blank(),
-    axis.text = element_markdown(size = 12),
-    axis.title = element_markdown(size = 12),
-    plot.title = element_markdown(
-      size = 12,
-      hjust = 0,
-      vjust = 1,
-      colour = "white",
-      face = "bold"
-    ),
-    axis.text.x = element_markdown(size = 12),
-    axis.ticks.x = element_line(),
-    axis.title.x = element_markdown(size = 12),
-    axis.ticks.y = element_line(),
-    axis.text.y = element_markdown(size = 12),
-    axis.title.y = element_markdown(size = 12),
-    strip.text = element_markdown(size = 12),
-    plot.margin = unit(c(0, 0, 0, 0), "cm")
-  ) +
-  scale_x_continuous(breaks = c(8, 12, 16, 20),
-                     labels = c("8", "12", "16", "20"),
-                     expand = c(0, 0)) +
-  scale_y_continuous(breaks = c(54, 56, 58, 60),
-                     labels = c("54", "56", "58", "60"),
-                     expand = c(0, 0)) +
-  guides(color = guide_colorbar(order = 1), size = guide_legend(order = 2))
+    ggspatial::geom_spatial_point(
+      data = genus_dens,
+      aes(x = lon, y = lat, col = log_cells_L, size = n)
+    ) +
+    facet_grid(. ~ year2) +
+    scale_color_gradientn(
+      colors = viridisLite::plasma(200),
+      limits = log(c(1, 10^5)),
+      breaks = log_breaks,
+      labels = custom_labels,
+      name   = stringr::str_wrap("Cell density <br> (cells L<sup>-1</sup>)", width = 2)
+    ) +
+    scale_size_area(
+      limits   = c(0, 65),
+      breaks   = custom_breaks,
+      max_size = 6,
+      labels   = custom_sizes,
+      name     = stringr::str_wrap("Number of <br> present <br> observations", width = 2)
+    ) +
+    labs(
+      title = genus_display_names[[genus]],
+      x = if (is_last) "Longitude (°E)" else NULL,
+      y = if (is_last) "Latitude (°N)"  else NULL
+    ) +
+    theme_minimal() +
+    theme(
+      panel.grid.major  = element_blank(),
+      panel.grid.minor  = element_blank(),
+      panel.background  = element_rect(fill = "white"),
+      legend.title      = element_markdown(hjust = 0.5, size = 10, margin = margin(b = 10)),
+      strip.background  = element_blank(),
+      strip.text        = element_markdown(size = 10),
+      plot.title        = element_markdown(size = 11, hjust = 0),
+      axis.text.x       = if (is_last) element_markdown(size = 10) else element_blank(),
+      axis.ticks.x      = if (is_last) element_line() else element_blank(),
+      axis.title.x      = element_markdown(size = 10),
+      axis.ticks.y      = if (is_last) element_line() else element_blank(),
+      axis.text.y       = if (is_last) element_markdown(size = 10) else element_blank(),
+      axis.title.y      = element_markdown(size = 10)
+    ) +
+    scale_x_continuous(breaks = c(8, 12, 16, 20), labels = c("8", "12", "16", "20"), expand = c(0, 0)) +
+    scale_y_continuous(breaks = c(54, 56, 58, 60), labels = c("54", "56", "58", "60"), expand = c(0, 0)) +
+    guides(color = guide_colorbar(order = 1), size = guide_legend(order = 2))
 
-
-ggsave(
- "AP_cell_densities2.png",
- cell_dens_plot,
- path = paste0(script_dir, "/", "maps"),
- dpi = 300,
- width = 6,
- height = 4,
- units = "in"
-)
+  ggsave(
+    filename = paste0(genus, "_cell_densities.png"),
+    plot     = plot2,
+    path     = file.path(script_dir, "maps"),
+    dpi      = 300,
+    width    = 10,
+    height   = 2.5,
+    units    = "in"
+  )
+})
 
 ####### TIME SERIES ANALYSIS ####### 
 script_dir <- setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
@@ -1991,49 +1820,80 @@ filtered_data <- filtered_data %>%
  mutate(limiting_conditions = as.factor(limiting_conditions),
      strat = as.factor(strat))
 
-# find stations first that contain both absent and present entries
-# which reduces calculation time of the following for-loops
+# Per-genus stations that have both 0 and 1 observations (required by check_and_fit)
+stations_matching_per_genus <- setNames(
+  lapply(genera_of_interest, function(g) {
+    pc <- prob_col_name(g)
+    if (!pc %in% colnames(filtered_data)) return(character(0))
+    filtered_data %>%
+      group_by(station) %>%
+      dplyr::summarise(n_prob = n_distinct(.data[[pc]], na.rm = TRUE), .groups = "drop") %>%
+      filter(n_prob >= 2) %>%
+      pull(station)
+  }),
+  genera_of_interest
+)
+
+# Also keep the overall any-harmful-algae station set (backward compat)
 stations_matching_condition <- filtered_data %>%
- group_by(station) %>%
- dplyr::summarise(n_prob = n_distinct(probability)) %>%
- filter(n_prob >= 2) %>%
- pull(station)
+  group_by(station) %>%
+  dplyr::summarise(n_prob = n_distinct(probability, na.rm = TRUE), .groups = "drop") %>%
+  filter(n_prob >= 2) %>%
+  pull(station)
 
-# apply check_and_fit function that checks for GLM requirements and
-# then calculates the doyly, monthly and yearly probabilities including 95% CI intervals of A. pseudogonyaulax presence
-# and fits a logistic regression to the yearly probability patterns
-if (!exists("global_models_list", envir = .GlobalEnv)) {
-  assign("global_models_list", list(), envir = .GlobalEnv)
+# Run check_and_fit for each genus at each qualifying station.
+# Results land in genus-specific result lists (results_list_<Genus>) to avoid collisions.
+# The overall "probability" column is also analysed under results_list_overall.
+
+all_prob_cols <- c("probability", sapply(genera_of_interest, prob_col_name))
+
+for (pc in all_prob_cols) {
+  genus_tag  <- sub("^probability_?", "", pc)   # "" for overall, "Alexandrium" etc. for genera
+  rlist_name <- paste0("results_list_", if (genus_tag == "") "overall" else genus_tag)
+  stns_mc    <- if (genus_tag == "") stations_matching_condition
+                else stations_matching_per_genus[[genus_tag]]
+
+  if (length(stns_mc) == 0) next
+
+  for (each_station in stns_mc) {
+    tryCatch(
+      check_and_fit(
+        filtered_data,
+        each_station,
+        "probparm_station_monthly",
+        "probparm_station_yearly",
+        "predicted_probs_station_yearly",
+        rlist_name,
+        "probparm_station_doyly",
+        "probparm_station_doyly_fit",
+        prob_col    = pc,
+        stations_mc = stns_mc
+      ),
+      error = function(e) message(sprintf("check_and_fit error [%s / %s]: %s", pc, each_station, e$message))
+    )
+  }
 }
-global_models_list <- list()
 
-for (each_station in stations_matching_condition) {
- check_and_fit(
-  filtered_data,
-  each_station,
-  "probparm_station_monthly",
-  "probparm_station_yearly",
-  "predicted_probs_station_yearly",
-  "results_list_",
-  "probparm_station_doyly",
-  "probparm_station_doyly_fit"
- )
+# Collect per-genus results into the canonical names used downstream.
+# The "overall" results are assigned to the global names used throughout the analysis.
+overall_rlist <- if (exists("results_list_overall", envir = .GlobalEnv))
+  get("results_list_overall", envir = .GlobalEnv) else list()
+
+for (nm in c("probparm_station_monthly", "probparm_station_yearly",
+             "predicted_probs_station_yearly", "probparm_station_doyly",
+             "probparm_station_doyly_fit")) {
+  if (!is.null(overall_rlist[[nm]]) && nrow(overall_rlist[[nm]]) > 0)
+    assign(nm, overall_rlist[[nm]], envir = .GlobalEnv)
 }
 
-# Filter the working directory to get a list of all non-empty dataframes
-non_empty_dfs <-
- lapply(ls(envir = .GlobalEnv, pattern = "^results_list_"), function(list_name) {
-  results_list <- get(list_name, envir = .GlobalEnv)
-  lapply(results_list, function(df) {
-   if (!is.null(df) && is.data.frame(df) && nrow(df) > 0) {
-    return(df)
-   }
-   return(NULL)
-  })
- })
-
-non_empty_dfs <- unlist(non_empty_dfs, recursive = FALSE)
-list2env(non_empty_dfs, envir = .GlobalEnv)
+# Collect per-genus results into genus_ts_results list
+genus_ts_results <- setNames(
+  lapply(genera_of_interest, function(g) {
+    rlist_name <- paste0("results_list_", g)
+    if (exists(rlist_name, envir = .GlobalEnv)) get(rlist_name, envir = .GlobalEnv) else list()
+  }),
+  genera_of_interest
+)
 
 parameters_of_interest <-
  c(
@@ -2085,23 +1945,30 @@ total_stations <- length(stations)
 set.seed(1234)
 filtered_data$DIN_DIP <- filtered_data$DIN / filtered_data$DIP
 
+# Bootstrap environmental deviation analysis – run for ALL probability columns (overall + per genus).
+# process_data() accepts a vector of probability columns and loops internally.
 station_parameters_coefficients <-
   lapply(seq_along(stations), function(i) {
     each_station <- stations[i]
     cat("Station being analysed:", each_station, "- Station", i, "of", total_stations, "\n")
     tryCatch({
-      station_data <- filtered_data %>% filter(station == each_station)
-      years_station <-
-        years_since_first_observation %>%
+      station_data  <- filtered_data %>% filter(station == each_station)
+      years_station <- years_since_first_observation %>%
         filter(station == each_station) %>%
         ungroup() %>%
         dplyr::select(year, species)
+      # Pass all probability columns that have presence data at this station
+      pc_here <- all_prob_cols[sapply(all_prob_cols, function(pc) {
+        pc %in% colnames(station_data) &&
+          any(station_data[[pc]] == 1L, na.rm = TRUE)
+      })]
+      if (length(pc_here) == 0) return(NULL)
       process_data(
         station_data,
         years_station,
         c("NO3", "PO4", "temp", "sal", "silicate", "N_P"),
         each_station,
-        "probability"
+        pc_here   # vector: process_data loops over each internally
       )
     }, error = function(e) {
       message(sprintf("Error processing station %s: %s", each_station, e$message))
@@ -2238,139 +2105,147 @@ Coef_stations <- left_join(Coef_stations, station_and_waterbody %>% dplyr::selec
 
 percent_parameters <- c("NO3", "PO4", "silicate", "N_P")
 
-plot_list <- list()
+# Environmental deviation plots – loop over all probability columns (overall + per genus)
+for (pc in unique(Coef_stations$species)) {
+  genus_tag   <- sub("^probability_?", "", pc)
+  genus_label <- if (genus_tag == "" || pc == "probability") "any harmful algae"
+                 else genus_display_names[[genus_tag]]
+  y_lab_dev   <- paste0("Deviation when <i>", genus_label, "</i> is present")
 
-# Loop through each parameter and create a plot
-for (param in unique(Coef_stations$parameter)) {
-  param_data <- Coef_stations %>% filter(parameter == param & species == "probability")  %>%
-    mutate(sig_color = ifelse(lower_ci > 0 | upper_ci < 0, "darkred", "black"))
-  
-  y_label_function <- if (param %in% percent_parameters) {
-    scales::label_number(suffix = "%", accuracy = 1)
-  } else {
-    scales::label_number(accuracy = 0.1)
+  # Per-genus output directory
+  genus_plot_dir <- if (pc == "probability") base_plot_dir
+                    else file.path(base_plot_dir, genus_tag)
+  dir.create(genus_plot_dir, showWarnings = FALSE, recursive = TRUE)
+  dir.create(file.path(genus_plot_dir, "lag"), showWarnings = FALSE, recursive = TRUE)
+
+  plot_list_dev <- list()
+
+  for (param in unique(Coef_stations$parameter)) {
+    param_data <- Coef_stations %>%
+      filter(parameter == param & species == pc) %>%
+      mutate(sig_color = ifelse(lower_ci > 0 | upper_ci < 0, "darkred", "black"))
+
+    if (nrow(param_data) == 0) next
+
+    y_label_function <- if (param %in% percent_parameters)
+      scales::label_number(suffix = "%", accuracy = 1)
+    else
+      scales::label_number(accuracy = 0.1)
+
+    plot_dev <- ggplot(param_data, aes(x = station_number, y = relative_deviation)) +
+      geom_point(aes(color = sig_color), size = 1.5) +
+      geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci, color = sig_color), width = 0) +
+      scale_color_identity() +
+      labs(x = "Station", y = y_lab_dev) +
+      theme_classic() +
+      theme(axis.text.x        = element_markdown(angle = 90, size = 9, hjust = 1, vjust = 0.5),
+            axis.text.y        = element_markdown(size = 9),
+            plot.title         = element_markdown(hjust = 0, vjust = 0, size = 12, face = "bold"),
+            panel.grid.major   = element_blank(),
+            panel.grid.minor   = element_blank(),
+            panel.background   = element_rect(fill = "white"),
+            legend.title       = element_blank(),
+            legend.text        = element_markdown(size = 12),
+            strip.background   = element_blank(),
+            axis.title.y       = element_markdown(size = 12),
+            axis.ticks.length.x = unit(0.35, "cm")) +
+      scale_x_discrete(guide = guide_axis(n.dodge = 2, minor.ticks = TRUE)) +
+      scale_y_continuous(expand = c(0, 0), labels = y_label_function)
+
+    plot_list_dev[[param]] <- plot_dev
+
+    plot_dir_param <- if (grepl("lag", param, ignore.case = TRUE))
+      file.path(genus_plot_dir, "lag") else genus_plot_dir
+
+    ggsave(file.path(plot_dir_param, paste0(param, ".png")), plot_dev,
+           width = 10, height = 8, dpi = 300)
   }
-  
-  plot <- ggplot(param_data, aes(x = station_number, y = relative_deviation)) +
-    geom_point(aes(color = sig_color), size = 1.5) + 
-    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci, color = sig_color), width = 0) +
-    scale_color_identity() +  # <-- Use actual color values without legend
-    labs(x = "Station", y = "Deviation when <i>A. pseudogonyaulax</i> is present") +
-    theme_classic() +
-    theme(axis.text.x = element_markdown(angle = 90, size = 9, hjust = 1, vjust = 0.5),
-          axis.text.y = element_markdown(size = 9),
-          plot.title = element_markdown(
-            hjust = 0,
-            vjust = 0,
-            size = 12,
-            face = "bold"
-          ),
-          panel.grid.major = element_blank(),
-          panel.grid.minor = element_blank(),
-          panel.background = element_rect(fill = 'white'),
-          legend.title = element_blank(),
-          legend.text = element_markdown(size = 12),
-          strip.background = element_blank(),
-          axis.title.y = element_markdown(size = 12),
-          axis.ticks.length.x = unit(0.35, "cm")) +
-    scale_x_discrete(guide = guide_axis(n.dodge = 2, minor.ticks = TRUE)) +
-    scale_y_continuous(expand = c(0, 0), labels = y_label_function)
-  
-  plot_list[[param]] <- plot
-  
-  if (grepl("lag", param, ignore.case = TRUE)) {
-    plot_dir <- file.path(base_plot_dir, "lag")
-    if (!dir.exists(plot_dir)) {
-      dir.create(plot_dir, recursive = TRUE)
-    }
-  } else {
-    plot_dir <- base_plot_dir
+
+  # Combined 6-panel figure for key parameters (when available for this prob_col)
+  key_params <- c("NO3", "PO4", "N_P", "silicate", "temp", "sal")
+  key_available <- key_params[key_params %in% names(plot_list_dev)]
+  if (length(key_available) == 6) {
+    combo_plots <- mapply(function(p, lbl) {
+      add_common_theme(plot_list_dev[[p]], label = lbl, x_label = "Station", y_label = y_lab_dev)
+    }, key_available, letters[1:6], SIMPLIFY = FALSE)
+
+    all_plots_dev <- wrap_plots(combo_plots, ncol = 3, nrow = 2, guides = "collect") +
+      plot_layout(axis_titles = "collect")
+
+    fig_name <- if (pc == "probability") "fig6_manuscript4.png"
+                else paste0("fig6_", genus_tag, ".png")
+    ggsave(fig_name, all_plots_dev,
+           path = file.path(script_dir, "figures"),
+           dpi = 300, width = 6, height = 5, units = "in")
   }
-  
-  plot_path <- file.path(plot_dir, paste0(param, ".png"))
-  
-  ggsave(plot_path, plot, width = 10, height = 8, dpi = 300)
-  
 }
 
-plots <- list(add_common_theme(plot_list$NO3, label = "a)",  x_label = "Station", y_label = "Deviation when <i>A. pseudogonyaulax</i> is present"), 
-              add_common_theme(plot_list$PO4, label = "b)", x_label = "Station", y_label = "Deviation when <i>A. pseudogonyaulax</i> is present"),
-              add_common_theme(plot_list$'N_P', label = "c)", x_label = "Station", y_label = "Deviation when <i>A. pseudogonyaulax</i> is present"),
-              add_common_theme(plot_list$silicate, label = "d)", x_label = "Station", y_label = "Deviation when <i>A. pseudogonyaulax</i> is present"),
-              add_common_theme(plot_list$temp, label =  "e)", x_label = "Station", y_label = "Deviation when <i>A. pseudogonyaulax</i> is present"),
-              add_common_theme(plot_list$sal, label = "f)", x_label = "Station", y_label = "Deviation when <i>A. pseudogonyaulax</i> is present"))
-              
-all_plots <- wrap_plots(plots, ncol = 3, nrow = 2, guides = "collect") +
-  plot_layout(axis_titles = "collect")    
-
-ggsave(
-  "fig6_manuscript4.png",
-  all_plots,
-  path = paste0(script_dir, "/", "figures"),
-  dpi = 300,
-  width = 6,
-  height = 5,
-  units = "in"
-)
-
-# Bootstrap GAM results
-n_boot <- 10000
+# Bootstrap GAM seasonal timing analysis – loop over all probability columns
+# n_boot iterations per station per genus; results stored in all_boot_results list
+n_boot    <- 10000
 threshold <- 0.1
-boot_results <- list()
+doy_grid  <- seq(0, 365, length.out = 366)
 
-doy_grid <- seq(0, 365, length.out = 366)
+set.seed(123)
 
-stations_sub <- filtered_data %>%
-  group_by(station) %>%
-  drop_na(probability) %>%
-  dplyr::reframe(
-    n_total = n(),
-    n_presence = sum(probability == 1, na.rm = TRUE),
-    n_unique_doy = n_distinct(doy)
-  ) %>% 
-  filter(n_presence >= 10)
+all_boot_results <- list()
 
-set.seed(123)  
+for (pc in all_prob_cols) {
+  if (!pc %in% colnames(filtered_data)) next
 
-for (s in unique(stations_sub$station)) {
-  dat_station <- filtered_data %>% 
-    filter(station == s) %>%
-    drop_na(probability)
-  
-  boot_summary <- replicate(n_boot, {
-    dat_boot <- dat_station %>%
-      group_by(probability) %>%
-      group_modify(~ slice_sample(.x, n = nrow(.x), replace = TRUE)) %>%
-      ungroup() %>%
-      mutate(
-        station = as.factor(as.character(station)),
-        doy = as.numeric(doy)
+  stations_sub_g <- filtered_data %>%
+    group_by(station) %>%
+    drop_na(!!sym(pc)) %>%
+    dplyr::reframe(
+      n_total      = n(),
+      n_presence   = sum(.data[[pc]] == 1L, na.rm = TRUE),
+      n_unique_doy = n_distinct(doy)
+    ) %>%
+    filter(n_presence >= 10)
+
+  if (nrow(stations_sub_g) == 0) next
+
+  boot_results_g <- list()
+
+  for (s in unique(stations_sub_g$station)) {
+    dat_station <- filtered_data %>%
+      filter(station == s) %>%
+      drop_na(!!sym(pc))
+
+    boot_summary <- replicate(n_boot, {
+      dat_boot <- dat_station %>%
+        group_by(!!sym(pc)) %>%
+        group_modify(~ slice_sample(.x, n = nrow(.x), replace = TRUE)) %>%
+        ungroup() %>%
+        mutate(station = as.factor(as.character(station)), doy = as.numeric(doy))
+
+      fit <- tryCatch(
+        mgcv::gam(as.formula(paste0(pc, " ~ s(doy, bs = 'cp')")),
+                  data = dat_boot, family = binomial,
+                  knots = list(doy = c(0, 365))),
+        error = function(e) return(NULL)
       )
-    
-    fit <- tryCatch(
-      mgcv::gam(probability ~ s(doy, bs = "cp"), 
-                data = dat_boot, family = binomial,
-                knots = list(doy = c(0, 365))),
-      error = function(e) return(NULL)
-    )
-    
-    if (is.null(fit)) return(rep(NA, 3))  
-    
-    pred <- predict(fit, newdata = data.frame(doy = doy_grid), type = "response")
-    
-    t1 <- doy_grid[which(pred >= threshold)[1]]
-    t2 <- doy_grid[rev(which(pred >= threshold))[1]]
-    p_max <- doy_grid[which.max(pred)]
-    
-    c(t1, t2, p_max)
-  }, simplify = "matrix")
-  
-  boot_results[[s]] <- as.data.frame(t(boot_summary))
-  colnames(boot_results[[s]]) <- c("t1", "t2", "p_max")
-  boot_results[[s]]$station <- s
+      if (is.null(fit)) return(rep(NA, 3))
+
+      pred  <- predict(fit, newdata = data.frame(doy = doy_grid), type = "response")
+      t1    <- doy_grid[which(pred >= threshold)[1]]
+      t2    <- doy_grid[rev(which(pred >= threshold))[1]]
+      p_max <- doy_grid[which.max(pred)]
+      c(t1, t2, p_max)
+    }, simplify = "matrix")
+
+    df_s <- as.data.frame(t(boot_summary))
+    colnames(df_s) <- c("t1", "t2", "p_max")
+    df_s$station   <- s
+    df_s$prob_col  <- pc
+    boot_results_g[[s]] <- df_s
+  }
+
+  all_boot_results[[pc]] <- bind_rows(boot_results_g)
 }
 
-boot_all <- bind_rows(boot_results)
+# Use the overall "probability" column results as the primary boot_all (backward compat)
+boot_all <- if ("probability" %in% names(all_boot_results)) all_boot_results[["probability"]] else data.frame()
 
 ci_summary <- boot_all %>%
   pivot_longer(cols = c("t1", "t2", "p_max")) %>%
@@ -2385,7 +2260,7 @@ ci_summary <- boot_all %>%
 
 bootstrap_results <- left_join(boot_all, station_and_waterbody)
 
-bootstrap_results$iteration <- rep(1:10000, times = length(unique(bootstrap_results$station)))
+bootstrap_results$iteration <- rep(1:n_boot, times = length(unique(bootstrap_results$station)))
 
 group_diffs <- bootstrap_results %>%
   group_by(iteration, water_body) %>%
@@ -2501,53 +2376,50 @@ probparm_station_doyly_fit_characteristics <-
  full_join(station_and_waterbody) %>%
  filter(!is.infinite(t1) & !is.na(t1))
 
-# Calculate seasonal means
-filtered_data <- filtered_data %>% 
-  mutate(across(starts_with("prob"), as.factor)) %>% 
+# Calculate seasonal means – keep probability columns as integer, only convert strat/limiting_conditions
+filtered_data <- filtered_data %>%
   convert_as_factor(strat, limiting_conditions)
 
-seasonal_means <- calculate_seasonal_mean(filtered_data, "probability")
+# Calculate seasonal means for ALL probability columns (overall + per genus)
+all_prob_cols_present <- all_prob_cols[all_prob_cols %in% colnames(filtered_data)]
+seasonal_means <- calculate_seasonal_mean(filtered_data, all_prob_cols_present)
 
+# Build sa_plot using the overall "probability" column (any harmful algae) as the y-axis baseline
 prob_only <- seasonal_means %>%
- filter(parameter == "probability") %>%
- dplyr::select(-parameter) %>%
- dplyr::rename(probability = data)
+  filter(parameter == "probability") %>%
+  dplyr::select(-parameter) %>%
+  dplyr::rename(probability = data)
 
 seasonal_means <- seasonal_means %>%
- filter(!parameter == "probability") %>% 
- left_join(prob_only, by = c("time", "station"))
+  filter(parameter != "probability") %>%
+  left_join(prob_only, by = c("time", "station"))
 
-facet_parameters <- c("TN",
-                      "DIN",
-                      "chl",
-                      "temp",
-                      "limiting_conditions",
-                      "strat",
-                      "PO4",
-                      "sal")
+facet_parameters <- c("TN", "DIN", "chl", "temp", "limiting_conditions", "strat", "PO4", "sal")
 
 sa_plot <- seasonal_means %>%
- filter(
-  parameter %in% facet_parameters) %>%
- mutate(parameter = factor(parameter, levels = facet_parameters)) %>%
- group_by(parameter, station) %>%
- dplyr::summarise(data = mean(data, na.rm = TRUE),
-          probability  = mean(probability, na.rm = TRUE),
-          .groups      = "drop")
+  filter(parameter %in% facet_parameters) %>%
+  mutate(parameter = factor(parameter, levels = facet_parameters)) %>%
+  group_by(parameter, station) %>%
+  dplyr::summarise(
+    data        = mean(data,        na.rm = TRUE),
+    probability = mean(probability, na.rm = TRUE),
+    .groups     = "drop"
+  )
 
+# Overall seasonal means figure (using overall "probability" column; no genus argument → generic label)
 plots <- Map(create_seasonal_means_plot, facet_parameters, letters[1:8])
 
 facet_plots_grid <- wrap_plots(plots, ncol = 4, nrow = 2, guides = "collect") +
- plot_layout(axis_titles = "collect")
+  plot_layout(axis_titles = "collect")
 
 ggsave(
- "fig3_manuscript_defense3.png",
- facet_plots_grid,
- path = paste0(script_dir, "/", "figures"),
- dpi = 300,
- width = 9,
- height = 5,
- units = "in"
+  "fig3_manuscript_defense3.png",
+  facet_plots_grid,
+  path   = file.path(script_dir, "figures"),
+  dpi    = 300,
+  width  = 9,
+  height = 5,
+  units  = "in"
 )
 
 # Statistical analysis and pairwise comparisons of station characteristics, i.e., the days after which
@@ -2585,50 +2457,45 @@ tab <-
  autofit() %>%
  save_as_docx(path = paste0(script_dir, "/", "probparm_station_doyly_fit_characteristics.docx"))
 
-# Extract the amount of presence observations of A. ostenfeldii and A. pseudogonyaulax and join them together
-amount_of_observations_all <- bind_rows(
- filtered_data %>%
-  filter(probability == 1) %>%
-  mutate(species = "A. pseudogonyaulax"),
- 
- filtered_data %>%
-  filter(probability_AO == 1) %>%
-  mutate(species = "A. ostenfeldii")
-) %>%
- group_by(station, year, species) %>%
- dplyr::summarize(n_presence = n(), .groups = "drop") %>%
- left_join(unique_stations %>% dplyr::select(station, station_number), by = "station") %>%
- arrange(desc(station_number)) %>%
- mutate(
-  station_number = factor(station_number, levels = unique(station_number)),
-  species = factor(species, levels = c("A. pseudogonyaulax", "A. ostenfeldii"))
- )
+####### Observation count heatmaps – one panel per genus #######
+# Build a combined data frame: one row per station/year/genus with presence count
+amount_of_observations_all <- map_dfr(genera_of_interest, function(genus) {
+  pc <- prob_col_name(genus)
+  if (!pc %in% colnames(filtered_data)) return(tibble())
+  filtered_data %>%
+    filter(.data[[pc]] == 1L) %>%
+    mutate(genus_label = genus_display_names[[genus]]) %>%
+    group_by(station, year, genus_label) %>%
+    dplyr::summarize(n_presence = n(), .groups = "drop")
+}) %>%
+  left_join(unique_stations %>% dplyr::select(station, station_number), by = "station") %>%
+  arrange(desc(station_number)) %>%
+  mutate(station_number = factor(station_number, levels = unique(station_number)),
+         genus_label    = factor(genus_label, levels = genus_display_names))
 
-# Export the dataframe as a table in a word-document
-tab <-
-  amount_of_observations_all %>%
- flextable() %>%
- autofit() %>%
- save_as_docx(path = paste0(script_dir, "/", "amount_of_observations.docx"))
+# Export observation table
+amount_of_observations_all %>%
+  flextable() %>%
+  autofit() %>%
+  save_as_docx(path = file.path(script_dir, "amount_of_observations.docx"))
 
-####### Heatmap of the amount of present observations of A. ostenfeldii and A. pseudogonyaulax ####### 
+####### Heatmap of the amount of present observations per genus #######
 reordered_levels <- amount_of_observations_all %>%
   dplyr::select(station_number) %>%
-  unique() %>%  
+  unique() %>%
   mutate(station_number = as.character(station_number)) %>%
   as_tibble() %>%
   mutate(
-    group = str_extract(station_number, "^[A-Z]+"),
+    group  = str_extract(station_number, "^[A-Z]+"),
     number = as.numeric(str_extract(station_number, "\\d+"))
   ) %>%
-  arrange(
-    factor(group, levels = c("B", "D", "S", "L", "N", "NW")),
-    number
-  ) %>%
+  arrange(factor(group, levels = c("B", "D", "S", "L", "N", "NW")), number) %>%
   pull(station_number)
 
-amount_of_observations_all$station_number <- factor(amount_of_observations_all$station_number,
-                                                    levels = rev(reordered_levels))
+amount_of_observations_all$station_number <- factor(
+  amount_of_observations_all$station_number,
+  levels = rev(reordered_levels)
+)
 
 amount_of_observations_plot <-
   ggplot(amount_of_observations_all %>% filter(year >= 1997),
@@ -2638,50 +2505,42 @@ amount_of_observations_plot <-
     limits = c(0, 13),
     breaks = seq(0, 13, by = 3),
     labels = scales::label_number(accuracy = 1),
-    name = stringr::str_wrap("Number of <br> present <br> observations", width = 2) 
+    name   = stringr::str_wrap("Number of <br> present <br> observations", width = 2)
   ) +
   labs(title = "", x = "Time (year)", y = "Station") +
   theme_classic() +
   facet_wrap(
-    ~ species,
-    ncol = 1,
-    labeller = labeller(species = c("A. ostenfeldii" = "<b>b)</b>",
-                                    "A. pseudogonyaulax" = "<b>a)</b>")),
+    ~ genus_label,
+    ncol   = 2,
     scales = "free_x"
   ) +
   theme(
-    plot.title = element_markdown(),
+    plot.title       = element_markdown(),
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
-    panel.background = element_rect(fill = 'white'),
-    legend.title = element_markdown(
-      hjust = 0.5,
-      size = 12,
-      margin = margin(b = 10)
-    ),
-    axis.text.y = element_markdown(),
+    panel.background = element_rect(fill = "white"),
+    legend.title     = element_markdown(hjust = 0.5, size = 12, margin = margin(b = 10)),
+    axis.text.y      = element_markdown(),
     strip.background = element_blank(),
-    axis.text = element_markdown(),
-    strip.placement = "outside",
-    strip.text = element_markdown(hjust = 0, face = "bold")
+    axis.text        = element_markdown(),
+    strip.placement  = "outside",
+    strip.text       = element_markdown(hjust = 0, face = "bold")
   ) +
   scale_y_discrete(guide = guide_axis(n.dodge = 2), expand = c(0, 0)) +
   scale_x_continuous(
     breaks = seq(1996, 2025, by = 4),
     limits = c(1996, 2025),
     expand = c(0, 0),
-    labels = function(x) {
-      sprintf("%02d", x %% 100)
-    }
+    labels = function(x) sprintf("%02d", x %% 100)
   )
 
 ggsave(
- filename = "amount_of_observations.png",
- plot     = amount_of_observations_plot,
- path     = paste0(script_dir, "/", "figures"),
- units    = "in",
- height   = 7,
- width    = 4.5
+  filename = "amount_of_observations.png",
+  plot     = amount_of_observations_plot,
+  path     = file.path(script_dir, "figures"),
+  units    = "in",
+  height   = 14,
+  width    = 9
 )
 
 ####### PLOT PROBABILITY PATTERNS OVER TIME ####### 
@@ -2708,309 +2567,344 @@ filtered_data <-
  left_join(station_and_waterbody %>% 
        dplyr::select(station, station_number, water_body))
 
-result_all <-
- do.call(rbind, lapply(probability_columns, function(prob_col) {
-  calculate_seasonal_probability(filtered_data %>% 
-                   filter(station %in% unique_stations$station),
-                  prob_col)
- }))
-
-result_all <- result_all %>%
+# Seasonal probability per water body – now calculated for ALL probability columns
+result_all <- do.call(rbind, lapply(all_prob_cols_present, function(prob_col) {
+  calculate_seasonal_probability(
+    filtered_data %>% filter(station %in% unique_stations$station),
+    prob_col
+  )
+})) %>%
   mutate(
     water_body = if_else(water_body == "open", "open waters", water_body),
-    water_body = factor(water_body, levels = c("estuary", "coastal", "open waters"))
-  ) %>%
-  filter(species %in% c("probability", "probability_AO"))
+    water_body = factor(water_body, levels = c("estuary", "coastal", "open waters")),
+    # Friendly label for the genus in each species column
+    genus_label = case_when(
+      species == "probability" ~ "Any harmful algae",
+      TRUE ~ genus_display_names[sub("^probability_", "", species)]
+    )
+  )
+
+# Build color palette for all genera + overall
+n_cols    <- length(all_prob_cols_present)
+pal_cols  <- setNames(scales::hue_pal()(n_cols), all_prob_cols_present)
+pal_labs  <- setNames(
+  sapply(all_prob_cols_present, function(pc) {
+    if (pc == "probability") "Any harmful algae"
+    else genus_display_names[[sub("^probability_", "", pc)]]
+  }),
+  all_prob_cols_present
+)
 
 all_plots_monthly <- list()
 
-for (i in unique(result_all$water_body)) {
- P <-
-  ggplot(
-   result_all %>% filter(water_body == i),
-   aes(x = month, y = data, group = species)
+for (wb in levels(result_all$water_body)) {
+  P <- ggplot(
+    result_all %>% filter(water_body == wb),
+    aes(x = month, y = data, group = species, color = species, fill = species)
   ) +
-  geom_line(linewidth = 0.5) +
-  geom_point(size = 0.75) +
-  ylab("Probability of presence of <i>Alexandrium</i>") +
-  xlab("") +
-  ggtitle(i) +
-  theme_classic() +
-  theme(
-   plot.title = element_markdown(
-    hjust = 0,
-    vjust = 0,
-    size = 12,
-    face = "bold"
-   ),
-   panel.grid.major = element_blank(),
-   panel.grid.minor = element_blank(),
-   panel.background = element_rect(fill = 'white'),
-   legend.title = element_blank(),
-   axis.text.x = if (i != "open waters") element_blank() else element_markdown(angle = 90, size = 10),
-   axis.text.y = element_markdown(size = 10),
-   legend.text = element_markdown(size = 12),
-   strip.background = element_blank(),
-   axis.title.y = element_markdown(size = 12),
-   axis.title.x = if (i != "open waters") element_blank() else element_markdown(size = 12)
-  ) +
-  scale_x_discrete(breaks = 1:12,
-           labels = month.abb[1:12],
-           limits = factor(1:12),
-           expand = c(0.01, 0.01)) +
-  scale_y_continuous(breaks = seq(0.0, 0.5, 0.1),
-            labels = seq(0.0, 0.5, 0.1), expand = c(0, 0)) +
-  geom_ribbon(aes(
-   ymin = lwr,
-   ymax = upr,
-   fill = species
-  ),
-  alpha = 0.25) +
-  coord_cartesian(ylim = c(0, 0.5)) +
-  scale_fill_manual(
-   values = c("#377eb8", "#ff7f00"),
-   labels = c("<i>A. pseudogonyaulax</i>", "<i>A. ostenfeldii</i>"),
-   guide = guide_legend(
-    nrow = 1,
-    keyheight = unit(0.2, "cm"),
-    keywidth = unit(0.2, "cm")
-   )
-  )
- all_plots_monthly[[i]] <- P
+    geom_line(linewidth = 0.5) +
+    geom_point(size = 0.75) +
+    geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
+    ylab("Probability of presence") +
+    xlab("") +
+    ggtitle(wb) +
+    theme_classic() +
+    theme(
+      plot.title       = element_markdown(hjust = 0, vjust = 0, size = 12, face = "bold"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      legend.title     = element_blank(),
+      axis.text.x      = if (wb != "open waters") element_blank() else element_markdown(angle = 90, size = 10),
+      axis.text.y      = element_markdown(size = 10),
+      legend.text      = element_markdown(size = 10),
+      strip.background = element_blank(),
+      axis.title.y     = element_markdown(size = 12),
+      axis.title.x     = if (wb != "open waters") element_blank() else element_markdown(size = 12)
+    ) +
+    scale_x_discrete(breaks = 1:12, labels = month.abb[1:12],
+                     limits = factor(1:12), expand = c(0.01, 0.01)) +
+    scale_y_continuous(breaks = seq(0, 0.5, 0.1), labels = seq(0, 0.5, 0.1),
+                       expand = c(0, 0)) +
+    coord_cartesian(ylim = c(0, 0.5)) +
+    scale_color_manual(values = pal_cols, labels = pal_labs) +
+    scale_fill_manual( values = pal_cols, labels = pal_labs,
+                       guide  = guide_legend(nrow = 2, keyheight = unit(0.2, "cm"), keywidth = unit(0.2, "cm")))
+
+  all_plots_monthly[[wb]] <- P
 }
 
-all_plots <- 
-  all_plots_monthly[[2]] +
-  all_plots_monthly[[1]] +
-  all_plots_monthly[[3]] +
+all_plots_wb <-
+  all_plots_monthly[["coastal"]] +
+  all_plots_monthly[["estuary"]] +
+  all_plots_monthly[["open waters"]] +
   plot_layout(axes = "collect_y", ncol = 1, guides = "collect") +
   plot_annotation(theme = theme(legend.position = "bottom",
                                 legend.box.margin = margin(t = -5)))
 
 ggsave(
- filename = "all_stations_monthly.png",
- plot = all_plots,
- path = paste0(script_dir, "/", "figures"),
- units = "in",
- width = 4,
- height = 6
+  filename = "all_stations_monthly.png",
+  plot     = all_plots_wb,
+  path     = file.path(script_dir, "figures"),
+  units    = "in",
+  width    = 6,
+  height   = 8
 )
 
-# plot doyly data of each station and export
-for (each_station in unique(probparm_station_doyly$station)) {
- p.subset <-
-  probparm_station_doyly %>% filter(station == each_station) %>%
-  mutate(doy = as.numeric(doy))
- p.subset2 <-
-  probparm_station_doyly_fit %>% filter(station == each_station)
- filename <- paste0(each_station, "_CI", ".png")
- create_plot(
-  p.subset,
-  p.subset2,
-  "station",
-  "doy",
-  paste0(each_station, " doyly"),
-  paste0(script_dir, "/", "figures", "/", "station_doyly"),
-  paste0(each_station, ".png")
- )
+# Per-genus station probability plots (doyly and yearly) – loop over genera
+for (genus in genera_of_interest) {
+  rlist <- genus_ts_results[[genus]]
+  if (is.null(rlist) || length(rlist) == 0) next
+
+  doyly_df     <- rlist[["probparm_station_doyly"]]
+  doyly_fit_df <- rlist[["probparm_station_doyly_fit"]]
+  yearly_df    <- rlist[["probparm_station_yearly"]]
+  pred_df      <- rlist[["predicted_probs_station_yearly"]]
+
+  doyly_dir  <- file.path(script_dir, "figures", genus, "station_doyly")
+  yearly_dir <- file.path(script_dir, "figures", genus, "station_yearly")
+  dir.create(doyly_dir,  showWarnings = FALSE, recursive = TRUE)
+  dir.create(yearly_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # Doyly plots
+  if (!is.null(doyly_df) && nrow(doyly_df) > 0) {
+    for (each_station in unique(doyly_df$station)) {
+      p.subset  <- doyly_df %>% filter(station == each_station) %>% mutate(doy = as.numeric(doy))
+      p.subset2 <- if (!is.null(doyly_fit_df)) doyly_fit_df %>% filter(station == each_station) else NULL
+      create_plot(p.subset, p.subset2, "station", "doy",
+                  paste0(each_station, " doyly"), doyly_dir,
+                  paste0(each_station, ".png"), genus = genus)
+    }
+  }
+
+  # Yearly plots
+  if (!is.null(yearly_df) && nrow(yearly_df) > 0) {
+    for (each_station in unique(yearly_df$station)) {
+      p.subset  <- yearly_df %>% filter(station == each_station) %>% distinct()
+      p.subset2 <- if (!is.null(pred_df)) pred_df %>% filter(station == each_station) else NULL
+      create_plot(p.subset, p.subset2, "station", "year",
+                  each_station, yearly_dir,
+                  paste0(each_station, "_CI.png"), genus = genus)
+    }
+  }
 }
 
-# plot yearly data of each station and export
-for (each_station in unique(probparm_station_yearly$station)) {
- p.subset <-
-  probparm_station_yearly %>% filter(station == each_station) %>% distinct()
- p.subset2 <-
-  predicted_probs_station_yearly %>% filter(station == each_station)
- filename <- paste0(each_station, "_CI", ".png")
- create_plot(
-  p.subset,
-  p.subset2,
-  "station",
-  "year",
-  paste0(each_station),
-  paste0(script_dir, "/", "figures", "/", "station_yearly"),
-  filename
- )
+# Also export overall "any harmful algae" station plots (backward compat)
+if (exists("probparm_station_doyly") && nrow(probparm_station_doyly) > 0) {
+  dir.create(file.path(script_dir, "figures", "station_doyly"), showWarnings = FALSE, recursive = TRUE)
+  for (each_station in unique(probparm_station_doyly$station)) {
+    p.subset  <- probparm_station_doyly %>% filter(station == each_station) %>% mutate(doy = as.numeric(doy))
+    p.subset2 <- probparm_station_doyly_fit %>% filter(station == each_station)
+    create_plot(p.subset, p.subset2, "station", "doy",
+                paste0(each_station, " doyly"),
+                file.path(script_dir, "figures", "station_doyly"),
+                paste0(each_station, ".png"))
+  }
 }
 
-# Modelling the probability of presence as a function of temperature for each station
-filtered_data_temp <- filtered_data %>% 
- drop_na(temp, probability)
+if (exists("probparm_station_yearly") && nrow(probparm_station_yearly) > 0) {
+  dir.create(file.path(script_dir, "figures", "station_yearly"), showWarnings = FALSE, recursive = TRUE)
+  for (each_station in unique(probparm_station_yearly$station)) {
+    p.subset  <- probparm_station_yearly %>% filter(station == each_station) %>% distinct()
+    p.subset2 <- predicted_probs_station_yearly %>% filter(station == each_station)
+    create_plot(p.subset, p.subset2, "station", "year",
+                each_station,
+                file.path(script_dir, "figures", "station_yearly"),
+                paste0(each_station, "_CI.png"))
+  }
+}
 
-results_list <- list()
+# ── Phase 11: Temperature and Salinity GAM plots per genus ───────────────────
+# Loop over all probability columns (overall + 11 genera)
+temp_sal_plots <- list()
 
-gam_temp <- filtered_data_temp %>% 
-filter(month <= 10 & month >= 5 & year >= 2008)
+for (pc in all_prob_cols) {
+  genus_tag   <- sub("^probability_?", "", pc)
+  genus_label <- if (genus_tag == "") "overall" else genus_tag
+  display     <- if (genus_tag == "" || !genus_tag %in% names(genus_display_names)) {
+    "any harmful algae"
+  } else {
+    genus_display_names[[genus_tag]]
+  }
+  out_dir <- if (genus_tag == "") {
+    file.path(script_dir, "figures")
+  } else {
+    file.path(script_dir, "figures", genus_tag)
+  }
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
-M1a_gam <- mgcv::gam(data = gam_temp %>% filter(temp < 21.5 & temp >= 10),
-       probability ~ s(temp, bs = "tp", k = 3),
-       family = binomial)
-print(summary(M1a_gam))
-gam.check(M1a_gam)
-temp_gam_results <- data.frame(temp = seq(10, 21.5, length.out = 1000))
- 
-pred <- predict(M1a_gam, temp_gam_results, type = "response", se.fit = TRUE)
-   
-temp_gam_results$probability <- pred$fit
-temp_gam_results$se <- pred$se.fit
-temp_gam_results$lower <- temp_gam_results$probability - 1.96 * temp_gam_results$se
-temp_gam_results$upper <- temp_gam_results$probability + 1.96 * temp_gam_results$se
+  # ── Temperature GAM ──────────────────────────────────────────────────────
+  filtered_data_temp <- filtered_data %>% drop_na(temp, !!sym(pc))
 
-temp_gam_plot <- ggplot(temp_gam_results, aes(x = temp, y = probability)) +
- geom_point(
-  data = filtered_data_temp %>% filter(temp >= 10 &
-                      temp < 21.5 &
-                      year >= 2008 &
-                      month <= 10 &
-                      month >= 5) %>%
-   mutate(
-    temp        = round(temp, digits = 0),
-    probability = as.numeric(as.character(probability))
-   ) %>%
-   aggregate(probability ~ temp, FUN = "mean"),
-  aes(x = temp, y = probability)
- ) +
- geom_line(linewidth = 1) +
- geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
- labs(title = "a)", x = "Temperature (°C)", y = "Probability of presence<br> of <i>A. pseudogonyaulax</i>") +
- theme_classic() +
- theme(
-  plot.title = element_markdown(face = "bold"),
-  panel.grid.major = element_blank(),
-  panel.grid.minor = element_blank(),
-  panel.background = element_rect(fill = 'white'),
-  legend.title = element_blank(),
-  legend.text = element_markdown(),
-  axis.title.y = element_markdown(size = 12),
-  strip.background = element_blank(),
-  axis.text = element_markdown(size = 10),
-  strip.text = element_markdown(),
-  strip.placement = "outside",
-  legend.position = "top"
- ) +
-  scale_x_continuous(breaks = seq(6, 32, by = 2), expand = c(0.01, 0.01)) +
-  scale_y_continuous(limits = c(-0.01, 0.35), breaks = seq(0, 0.35, 0.05), expand = c(0.01, 0.01))
+  gam_temp <- filtered_data_temp %>%
+    filter(month <= 10 & month >= 5 & year >= 2008 & temp < 21.5 & temp >= 10)
 
-ggsave(
- filename = "temp_Ap.png",
- plot     = temp_gam_plot,
- path     = paste0(script_dir, "/", "figures"),
- units    = "in",
- width    = 4,
- height   = 3.5
-)
+  if (nrow(gam_temp) < 20 || sum(gam_temp[[pc]] == 1L, na.rm = TRUE) < 5) {
+    message("Skipping temp GAM for ", pc, " (insufficient data)")
+    next
+  }
 
-# Modelling the probability of presence as a function of temperature for each station
-filtered_data_sal <- filtered_data %>% drop_na(sal, probability)
+  M1a_temp <- tryCatch(
+    mgcv::gam(as.formula(paste0(pc, " ~ s(temp, bs = 'tp', k = 3)")),
+              data = gam_temp, family = binomial),
+    error = function(e) { message("Temp GAM failed for ", pc, ": ", e$message); NULL }
+  )
+  if (is.null(M1a_temp)) next
 
-results_df <- NULL
-results_list <- NULL
+  print(summary(M1a_temp))
+  gam.check(M1a_temp)
 
-gam_sal <-
- filtered_data_sal %>% filter(sal <= 32 & sal >= 5 &
-                 year >= 2008 & month <= 10 & month >= 5)
+  temp_range          <- data.frame(temp = seq(10, 21.5, length.out = 1000))
+  pred_temp           <- predict(M1a_temp, temp_range, type = "response", se.fit = TRUE)
+  temp_range$probability <- pred_temp$fit
+  temp_range$se          <- pred_temp$se.fit
+  temp_range$lower       <- temp_range$probability - 1.96 * temp_range$se
+  temp_range$upper       <- temp_range$probability + 1.96 * temp_range$se
 
-M1a_gam <-
- mgcv::gam(data = gam_sal,
-      probability ~ s(sal, k = 4, bs = "tp"),
-      family = binomial)
+  agg_temp <- filtered_data_temp %>%
+    filter(temp >= 10 & temp < 21.5 & year >= 2008 & month <= 10 & month >= 5) %>%
+    mutate(temp = round(temp, digits = 0),
+           prob_val = as.integer(.data[[pc]])) %>%
+    group_by(temp) %>%
+    dplyr::summarise(probability = mean(prob_val, na.rm = TRUE), .groups = "drop")
 
-print(summary(M1a_gam))
-gam.check(M1a_gam)
-sal_gam_results <- data.frame(sal = seq(5, 32, length.out = 10000))
+  temp_gam_plot <- ggplot(temp_range, aes(x = temp, y = probability)) +
+    geom_point(data = agg_temp, aes(x = temp, y = probability)) +
+    geom_line(linewidth = 1) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+    labs(title = "a)", x = "Temperature (\u00b0C)",
+         y = paste0("Probability of presence<br> of ", display)) +
+    theme_classic() +
+    theme(
+      plot.title       = element_markdown(face = "bold"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      legend.title     = element_blank(),
+      legend.text      = element_markdown(),
+      axis.title.y     = element_markdown(size = 12),
+      strip.background = element_blank(),
+      axis.text        = element_markdown(size = 10),
+      strip.text       = element_markdown(),
+      strip.placement  = "outside",
+      legend.position  = "top"
+    ) +
+    scale_x_continuous(breaks = seq(6, 32, by = 2), expand = c(0.01, 0.01)) +
+    scale_y_continuous(limits = c(-0.01, 0.35), breaks = seq(0, 0.35, 0.05),
+                       expand = c(0.01, 0.01))
 
-pred <- predict(M1a_gam, sal_gam_results, type = "response", se.fit = TRUE)
+  ggsave(filename = paste0("temp_", genus_label, ".png"),
+         plot = temp_gam_plot, path = out_dir,
+         units = "in", width = 4, height = 3.5)
 
-sal_gam_results$probability <- pred$fit
-sal_gam_results$se <- pred$se.fit
-sal_gam_results$lower <- sal_gam_results$probability - 1.96 * sal_gam_results$se
-sal_gam_results$upper <- sal_gam_results$probability + 1.96 * sal_gam_results$se
+  # ── Salinity GAM ─────────────────────────────────────────────────────────
+  filtered_data_sal <- filtered_data %>% drop_na(sal, !!sym(pc))
 
-sal_gam_plot <- ggplot(sal_gam_results , aes(x = sal, y = probability)) +
- geom_line(linewidth = 1) +
- geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
- geom_point(
-  data = filtered_data_sal %>% filter(sal <= 32 &
-                     sal >= 5 &
-                     year >= 2008 &
-                     month <= 10 &
-                     month >= 5) %>% mutate(
-                      sal = round(sal, digits = 0),
-                      probability = as.numeric(as.character(probability))
-                     ) %>% aggregate(probability ~ sal, FUN = "mean"),
-  aes(x = sal, y = probability)
- ) +
- labs(title = "b)", x = "Salinity", y = "Probability of presence<br> of <i>A. pseudogonyaulax</i>") +
- theme_classic() +
- theme(
-  plot.title = element_markdown(face = "bold"),
-  panel.grid.major = element_blank(),
-  panel.grid.minor = element_blank(),
-  panel.background = element_rect(fill = 'white'),
-  legend.title = element_blank(),
-  legend.text = element_markdown(),
-  axis.title.y = element_markdown(size = 12),
-  strip.background = element_blank(),
-  axis.text = element_markdown(size = 10),
-  strip.text = element_markdown(),
-  strip.placement = "outside",
-  legend.position = "top"
- ) +
- scale_x_continuous(breaks = seq(6, 32, by = 2), expand = c(0.01, 0.01)) +
-  scale_y_continuous(limits = c(-0.01, 0.35), breaks = seq(0, 0.35, 0.05), expand = c(0.01, 0.01))
+  gam_sal <- filtered_data_sal %>%
+    filter(sal <= 32 & sal >= 5 & year >= 2008 & month <= 10 & month >= 5)
 
-ggsave(
- filename = "sal_Ap.png",
- plot = sal_gam_plot,
- path = paste0(script_dir, "/", "figures"),
- units = "in",
- width = 4,
- height = 3.5
-)
+  if (nrow(gam_sal) < 20 || sum(gam_sal[[pc]] == 1L, na.rm = TRUE) < 5) {
+    message("Skipping sal GAM for ", pc, " (insufficient data)")
+    temp_sal_plots[[genus_label]] <- list(temp = temp_gam_plot, sal = NULL)
+    next
+  }
 
-P_combined <- temp_gam_plot + sal_gam_plot + plot_layout(ncol = 2, axis_titles = "collect")
+  M1a_sal <- tryCatch(
+    mgcv::gam(as.formula(paste0(pc, " ~ s(sal, k = 4, bs = 'tp')")),
+              data = gam_sal, family = binomial),
+    error = function(e) { message("Sal GAM failed for ", pc, ": ", e$message); NULL }
+  )
 
-ggsave(
- filename = "sal_temp_Ap.png",
- plot = P_combined,
- path = paste0(script_dir, "/", "figures"),
- units = "in",
- width = 8,
- height = 3.5
-)
+  if (!is.null(M1a_sal)) {
+    print(summary(M1a_sal))
+    gam.check(M1a_sal)
 
-# Create method figure as part of figure 2 in manuscript:
-probparm_station_doyly <-
- left_join(probparm_station_doyly, station_and_waterbody)
+    sal_range          <- data.frame(sal = seq(5, 32, length.out = 10000))
+    pred_sal           <- predict(M1a_sal, sal_range, type = "response", se.fit = TRUE)
+    sal_range$probability <- pred_sal$fit
+    sal_range$se          <- pred_sal$se.fit
+    sal_range$lower       <- sal_range$probability - 1.96 * sal_range$se
+    sal_range$upper       <- sal_range$probability + 1.96 * sal_range$se
 
-probparm_station_doyly_fit <-
- left_join(probparm_station_doyly_fit, station_and_waterbody)
+    agg_sal <- filtered_data_sal %>%
+      filter(sal <= 32 & sal >= 5 & year >= 2008 & month <= 10 & month >= 5) %>%
+      mutate(sal = round(sal, digits = 0),
+             prob_val = as.integer(.data[[pc]])) %>%
+      group_by(sal) %>%
+      dplyr::summarise(probability = mean(prob_val, na.rm = TRUE), .groups = "drop")
 
-plot_list <- list()
+    sal_gam_plot <- ggplot(sal_range, aes(x = sal, y = probability)) +
+      geom_line(linewidth = 1) +
+      geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+      geom_point(data = agg_sal, aes(x = sal, y = probability)) +
+      labs(title = "b)", x = "Salinity",
+           y = paste0("Probability of presence<br> of ", display)) +
+      theme_classic() +
+      theme(
+        plot.title       = element_markdown(face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        legend.title     = element_blank(),
+        legend.text      = element_markdown(),
+        axis.title.y     = element_markdown(size = 12),
+        strip.background = element_blank(),
+        axis.text        = element_markdown(size = 10),
+        strip.text       = element_markdown(),
+        strip.placement  = "outside",
+        legend.position  = "top"
+      ) +
+      scale_x_continuous(breaks = seq(6, 32, by = 2), expand = c(0.01, 0.01)) +
+      scale_y_continuous(limits = c(-0.01, 0.35), breaks = seq(0, 0.35, 0.05),
+                         expand = c(0.01, 0.01))
 
-for (each_water_body in unique(probparm_station_doyly$water_body)) {
- p.subset <-
-  probparm_station_doyly %>% 
-  filter(water_body == each_water_body & station != "STRETUDDEN") %>%
-  mutate(doy = as.numeric(doy)) %>% 
-  drop_na(water_body)
- 
- p.subset2 <-
-  probparm_station_doyly_fit %>% 
-  filter(water_body == each_water_body) %>% 
-  drop_na(water_body)
- 
- plot <- create_plot(
-  p.subset,
-  p.subset2,
-  "station",
-  "doy",
-  paste0(each_water_body, " doyly"),
-  paste0(script_dir, "/", "figures"),
-  paste0(each_water_body, ".png") # Specify the complete filename here
- )
+    ggsave(filename = paste0("sal_", genus_label, ".png"),
+           plot = sal_gam_plot, path = out_dir,
+           units = "in", width = 4, height = 3.5)
 
- plot_list <- c(plot_list, plot)
+    P_combined <- temp_gam_plot + sal_gam_plot +
+      plot_layout(ncol = 2, axis_titles = "collect")
+    ggsave(filename = paste0("sal_temp_", genus_label, ".png"),
+           plot = P_combined, path = out_dir,
+           units = "in", width = 8, height = 3.5)
+
+    temp_sal_plots[[genus_label]] <- list(temp = temp_gam_plot, sal = sal_gam_plot)
+  }
+}
+
+# ── Phase 12: Manuscript figures — per-genus water-body doyly & yearly plots ─
+
+# Use overall results for the methodology illustration figure (Fig 2)
+overall_doyly     <- if (exists("results_list_overall", envir = .GlobalEnv)) {
+  get("results_list_overall", envir = .GlobalEnv)$probparm_station_doyly
+} else NULL
+overall_doyly_fit <- if (exists("results_list_overall", envir = .GlobalEnv)) {
+  get("results_list_overall", envir = .GlobalEnv)$predicted_probs_station_doyly
+} else NULL
+
+if (!is.null(overall_doyly) && nrow(overall_doyly) > 0) {
+  overall_doyly     <- left_join(overall_doyly,     station_and_waterbody)
+  overall_doyly_fit <- left_join(overall_doyly_fit, station_and_waterbody)
+
+  plot_list <- list()
+  for (each_water_body in unique(overall_doyly$water_body)) {
+    p.subset <- overall_doyly %>%
+      filter(water_body == each_water_body & station != "STRETUDDEN") %>%
+      mutate(doy = as.numeric(doy)) %>%
+      drop_na(water_body)
+    p.subset2 <- overall_doyly_fit %>%
+      filter(water_body == each_water_body) %>%
+      drop_na(water_body)
+    plot <- create_plot(
+      p.subset, p.subset2, "station", "doy",
+      paste0(each_water_body, " doyly"),
+      file.path(script_dir, "figures"),
+      paste0(each_water_body, ".png")
+    )
+    plot_list <- c(plot_list, plot)
+  }
+} else {
+  plot_list <- list()
 }
 
 gaussian_distribution <- function(x, mean, sd) {
@@ -3069,7 +2963,7 @@ doy_method <- ggplot(df, aes(x, y)) +
  ) +
  scale_y_continuous(breaks = seq(0, 0.6, by = 0.1),
            limits = c(0, 0.6), expand = c(0, 0)) + 
- labs(x = "", y = "Probability of presence of <i>A. pseudogonyaulax</i>") +
+ labs(x = "", y = "Probability of presence of harmful algae") +
  ggtitle("a)") +
  theme_classic() +
  theme(
@@ -3093,10 +2987,10 @@ doy_method <- ggplot(df, aes(x, y)) +
   strip.text.x = element_markdown(hjust = 0, margin = margin(l = 0))
  )
 
-plots <- list(add_common_theme(doy_method, label = "a)", x_label = "", y_label = "Probability of presence of <i>A. pseudogonyaulax</i>"), 
-              add_common_theme(plot_list$`estuary doyly`, label = "b)", x_label = "", y_label = "Probability of presence of <i>A. pseudogonyaulax</i>"),
-              add_common_theme(plot_list$`coastal doyly`, label = "c)", x_label = "Time (doy)", y_label = "Probability of presence of <i>A. pseudogonyaulax</i>"),
-              add_common_theme(plot_list$`open doyly`, label = "d)", x_label = "Time (doy)", y_label = "Probability of presence of <i>A. pseudogonyaulax</i>"))
+plots <- list(add_common_theme(doy_method, label = "a)", x_label = "", y_label = "Probability of presence of harmful algae"),
+              add_common_theme(plot_list$`estuary doyly`, label = "b)", x_label = "", y_label = "Probability of presence of harmful algae"),
+              add_common_theme(plot_list$`coastal doyly`, label = "c)", x_label = "Time (doy)", y_label = "Probability of presence of harmful algae"),
+              add_common_theme(plot_list$`open doyly`, label = "d)", x_label = "Time (doy)", y_label = "Probability of presence of harmful algae"))
 
 fig2_manuscript <- wrap_plots(plots, ncol = 2, nrow = 2) +
   plot_layout(axis_titles = "collect") 
@@ -3111,110 +3005,164 @@ ggsave(
  units = "in"
 )
 
-manuscript_stations <-
- probparm_station_yearly %>% 
- filter(station %in% c(
-   "Arendal",
-   "ARH170006",
-   "VIB3708",
-   "NOR409",
-   "ANHOLT E",
-   "Heiligendamm",
-   "Indre Oslofjord",
-   "SLV Havstensfjorden-Ljungskile",
-   "TF0360",
-   "L9  LAHOLMSBUKTEN"
-  ))
+# ── Per-genus manuscript yearly probability plots ─────────────────────────────
+manuscript_station_ids <- c(
+  "Arendal", "ARH170006", "VIB3708", "NOR409", "ANHOLT E",
+  "Heiligendamm", "Indre Oslofjord", "SLV Havstensfjorden-Ljungskile",
+  "TF0360", "L9  LAHOLMSBUKTEN"
+)
 
-manuscript_stations <-
- calculate_upr_lwr(manuscript_stations) %>% 
- left_join(unique_stations, by = "station")
+for (genus in genera_of_interest) {
+  rlist <- genus_ts_results[[genus]]
+  if (is.null(rlist) || is.null(rlist$probparm_station_yearly)) next
 
-plots <- list()
-plots2 <- list()
-manuscript_subset <- data.frame()
+  yearly_df     <- rlist$probparm_station_yearly
+  yearly_fit_df <- rlist$predicted_probs_station_yearly
 
-for (each_station in unique(manuscript_stations$station)) {
- manuscript_subset <-
-  manuscript_stations %>% 
-  filter(station == each_station)
- 
- p.subset2 <-
-  predicted_probs_station_yearly %>% 
-  filter(station == each_station)
- 
- station_number <-
-  manuscript_subset$station_number[1] 
- 
- gg <- create_plot2(manuscript_subset,
-          p.subset2,
-          "station",
-          "year",
-          station_number,
-          each_station)
- 
- plots[[length(plots) + 1]]   <- ggplotGrob(gg)
- plots2[[each_station]] <- gg
- 
+  if (is.null(yearly_df) || nrow(yearly_df) == 0) next
+
+  manuscript_stations <- yearly_df %>%
+    filter(station %in% manuscript_station_ids)
+
+  if (nrow(manuscript_stations) == 0) next
+
+  manuscript_stations <- calculate_upr_lwr(manuscript_stations) %>%
+    left_join(unique_stations, by = "station")
+
+  prob_dir <- file.path(script_dir, "figures", genus, "probability")
+  dir.create(prob_dir, showWarnings = FALSE, recursive = TRUE)
+
+  plots2 <- list()
+  for (each_station in unique(manuscript_stations$station)) {
+    ms_sub <- manuscript_stations %>% filter(station == each_station)
+    p2_sub <- if (!is.null(yearly_fit_df)) {
+      yearly_fit_df %>% filter(station == each_station)
+    } else data.frame()
+    station_number <- ms_sub$station_number[1]
+    gg <- create_plot2(ms_sub, p2_sub, "station", "year",
+                       station_number, each_station, genus = genus)
+    ggsave(paste0(each_station, ".png"), gg, path = prob_dir,
+           dpi = 300, width = 5, height = 2.5, units = "cm")
+    plots2[[each_station]] <- gg
+  }
+
+  # Build combined manuscript figures from available stations
+  avail <- names(plots2)
+  get_p <- function(s) if (s %in% avail) plots2[[s]] else ggplot() + theme_void()
+
+  if (length(avail) >= 4) {
+    Fig_m1 <- get_p("Arendal") + get_p("VIB3708") + get_p("NOR409") + get_p("ARH170006") +
+      plot_layout(ncol = 1)
+    ggsave(paste0("Fig_prediction1_", genus, ".png"), Fig_m1, path = prob_dir,
+           dpi = 300, width = 2, height = 6, units = "in")
+  }
+  if (length(avail) >= 8) {
+    Fig_m2 <- get_p("SLV Havstensfjorden-Ljungskile") + get_p("ANHOLT E") +
+      get_p("L9  LAHOLMSBUKTEN") + get_p("Heiligendamm") + plot_layout(ncol = 1)
+    ggsave(paste0("Fig_prediction2_", genus, ".png"), Fig_m2, path = prob_dir,
+           dpi = 300, width = 2, height = 6, units = "in")
+  }
 }
 
-for(i in 1:length(plots2)){
- name <- unique(plots2[[i]]$data$station)
- ggsave(
- paste0(name, ".png"),
- plots2[[i]],
- path = paste0(script_dir, "/", "figures", "/", "probability"),
- dpi = 300,
- width = 5,
- height = 2.5,
- units = "cm"
-) 
-}
+# ── Phase 13: Secondary Statistical Methodology Groundwork ───────────────────
+# These blocks lay the framework for enhanced analyses. Each section is
+# self-contained and can be enabled by setting the corresponding flag to TRUE.
 
-Fig_manuscript <- plots2$Arendal + plots2$VIB3708 + plots2$NOR409 + plots2$ARH170006 + plot_layout(ncol = 1)
-Fig_manuscript2 <- plots2$`SLV Havstensfjorden-Ljungskile` + plots2$`ANHOLT E` + plots2$`L9  LAHOLMSBUKTEN` + plots2$Heiligendamm + plot_layout(ncol = 1)
-Fig_manuscript3 <- plots2$`Indre Oslofjord` + plots2$TF0360 + plots2$`Indre Oslofjord` + plots2$`Indre Oslofjord`  + plot_layout(ncol = 1)
-Fig_manuscript4 <- plots2$TF0360 + plots2$VIB3708 + plots2$VIB3708 + plots2$VIB3708  + plot_layout(ncol = 1)
+## 13.1  Spatial correlation smooth s(lat, lon) --------------------------------
+# Add a 2-D thin-plate spline for station location to GAM formulas to capture
+# spatial autocorrelation among monitoring stations.
+#   Example formula:
+#     as.formula(paste0(pc, " ~ s(doy, bs='cp') + s(lat, lon, bs='tp', k=20)"))
+# Requires lat/lon columns in filtered_data (already present as numeric).
+# Set k conservatively (~20) to avoid overfitting with sparse station coverage.
 
-ggsave(
-  "Fig_prediction1.png",
-  Fig_manuscript,
-  path = paste0(script_dir, "/", "figures", "/", "probability"),
-  dpi = 300,
-  width = 2,
-  height = 6,
-  units = "in"
-)
+## 13.2  Country random effect s(country, bs="re") ----------------------------
+# Include country as a random intercept using mgcv's "re" basis to account for
+# between-country variation in monitoring effort and reporting practices.
+#   model <- mgcv::gamm(
+#     as.formula(paste0(pc, " ~ s(doy, bs='cp') + s(country, bs='re')")),
+#     data   = station_data,
+#     family = binomial
+#   )
+# Note: gamm() handles the random-effect covariance structure; plain gam() with
+# bs="re" gives approximate results but is faster.
 
-ggsave(
-  "Fig_prediction2.png",
-  Fig_manuscript2,
-  path = paste0(script_dir, "/", "figures", "/", "probability"),
-  dpi = 300,
-  width = 2,
-  height = 6,
-  units = "in"
-)
+## 13.3  Benjamini-Hochberg FDR correction across genera ----------------------
+# After fitting GLMs across all genera, collect all p-values and apply FDR
+# correction to control the false discovery rate.
+#
+# Example (collect trend p-values from genus_ts_results):
+#   all_pvals <- lapply(genera_of_interest, function(g) {
+#     rlist <- genus_ts_results[[g]]
+#     if (is.null(rlist$result_year)) return(NULL)
+#     rlist$result_year %>%
+#       filter(term == "year") %>%
+#       mutate(genus = g, raw_p = p.value)
+#   }) %>% bind_rows()
+#
+#   all_pvals$adj_p <- p.adjust(all_pvals$raw_p, method = "BH")
+#   sig_genera <- all_pvals %>% filter(adj_p < 0.05)
 
-ggsave(
-  "Fig_prediction3.png",
-  Fig_manuscript3,
-  path = paste0(script_dir, "/", "figures", "/", "probability"),
-  dpi = 300,
-  width = 2,
-  height = 6,
-  units = "in"
-)
+## 13.4  Temporal autocorrelation via bam() with AR(1) ------------------------
+# Use mgcv::bam() with the rho parameter or a correlation structure to account
+# for temporal autocorrelation within station time series.
+#
+#   model_ar1 <- mgcv::bam(
+#     as.formula(paste0(pc, " ~ s(doy, bs='cp')")),
+#     data       = station_data,
+#     family     = binomial,
+#     rho        = 0.3,           # estimated AR(1) autocorrelation coefficient
+#     AR.start   = station_data$year_start  # logical: TRUE at start of each year
+#   )
+# Estimate rho from residuals of a base GAM using acf(residuals(base_model)).
 
-ggsave(
-  "Fig_prediction4.png",
-  Fig_manuscript4,
-  path = paste0(script_dir, "/", "figures", "/", "probability"),
-  dpi = 300,
-  width = 2,
-  height = 6,
-  units = "in"
-)
+## 13.5  Leave-one-year-out cross-validation ----------------------------------
+# Assess model predictive skill by iteratively holding out one year at a time.
+#
+#   years_cv  <- unique(station_data$year)
+#   cv_auc    <- numeric(length(years_cv))
+#   for (i in seq_along(years_cv)) {
+#     train  <- station_data %>% filter(year != years_cv[i])
+#     test   <- station_data %>% filter(year == years_cv[i])
+#     m_cv   <- mgcv::gam(formula, data = train, family = binomial)
+#     pred   <- predict(m_cv, test, type = "response")
+#     cv_auc[i] <- pROC::auc(test[[pc]], pred)
+#   }
+#   mean_auc <- mean(cv_auc, na.rm = TRUE)
+
+## 13.6  Co-occurrence analysis (station x genus presence matrix) -------------
+# Build a binary matrix (stations x genera) to identify co-occurring blooms and
+# compute pairwise Jaccard similarity or phi (point-biserial) correlation.
+#
+#   presence_mat <- filtered_data %>%
+#     group_by(combined_station) %>%
+#     dplyr::summarise(across(all_of(sapply(genera_of_interest, prob_col_name)),
+#                             ~ as.integer(any(. == 1L, na.rm = TRUE)),
+#                             .names = "{.col}")) %>%
+#     column_to_rownames("combined_station")
+#
+#   # Jaccard similarity matrix
+#   jaccard_mat <- proxy::dist(t(presence_mat), method = "Jaccard")
+#   # Phi correlation
+#   phi_mat     <- cor(presence_mat, use = "pairwise.complete.obs")
+
+## 13.7  Bootstrap sensitivity analysis (reduce iterations for testing) --------
+# When running full bootstrap (Phase 7), use n_boot = 100 for exploratory runs
+# before committing to n_boot = 10000. Already handled via n_boot variable set
+# earlier in the script.
+
+## 13.8  Post-hoc power analysis ----------------------------------------------
+# After obtaining effect sizes (beta coefficients from year GLMs), compute the
+# minimum number of observations needed to detect the observed effect at 80% power.
+#
+#   library(pwr)
+#   # For logistic regression, use Cohen's h on proportions:
+#   prop_start <- plogis(coef(year_model)[["(Intercept)"]])
+#   prop_end   <- plogis(coef(year_model)[["(Intercept)"]] +
+#                        coef(year_model)[["year"]] * n_years)
+#   h          <- pwr::ES.h(prop_end, prop_start)
+#   pwr_result <- pwr::pwr.p.test(h = h, sig.level = 0.05, power = 0.80)
+#   # pwr_result$n gives minimum required observations
 
 gc()
 rm(list = ls())

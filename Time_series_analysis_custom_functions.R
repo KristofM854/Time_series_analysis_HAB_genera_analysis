@@ -42,7 +42,62 @@ install_packages <- function() {
   )
 }
 
-####### Function to calculate seawater density ####### 
+####### Genera configuration: canonical genera vector, display names, and column-name helpers #######
+
+genera_of_interest <- c(
+  "Alexandrium", "Dinophysis", "Pseudonitzschia", "Azadinium",
+  "Chrysochromulina", "Prymnesium", "Amphidinium", "Pseudochattonella",
+  "Phaeocystis", "Karlodinium", "Cyanobacteria"
+)
+
+# Italic markdown names used in plot labels
+genus_display_names <- c(
+  Alexandrium       = "*Alexandrium* spp.",
+  Dinophysis        = "*Dinophysis* spp.",
+  Pseudonitzschia   = "*Pseudo-nitzschia* spp.",
+  Azadinium         = "*Azadinium* spp.",
+  Chrysochromulina  = "*Chrysochromulina* spp.",
+  Prymnesium        = "*Prymnesium* spp.",
+  Amphidinium       = "*Amphidinium* spp.",
+  Pseudochattonella = "*Pseudochattonella* spp.",
+  Phaeocystis       = "*Phaeocystis* spp.",
+  Karlodinium       = "*Karlodinium* spp.",
+  Cyanobacteria     = "Cyanobacteria"
+)
+
+# Column-name helper functions (single source of truth for naming conventions)
+prob_col_name  <- function(genus) paste0("probability_", genus)
+cells_col_name <- function(genus) paste0("cells_L_", genus)
+risk_col_name  <- function(genus) paste0("risk_level_", genus)
+
+####### Helper function for qualifying station selection (used in Phase 1 station filtering) #######
+get_qualifying_stations <- function(data, prob_col,
+                                    min_years        = 8,
+                                    min_months       = 3,
+                                    min_doy_per_year = 10,
+                                    year_range       = 2010:2020,
+                                    month_range      = 5:9) {
+  stk1 <- data %>%
+    filter(year %in% year_range, month %in% month_range) %>%
+    drop_na(!!sym(prob_col)) %>%
+    group_by(combined_station) %>%
+    dplyr::summarise(uy = n_distinct(year), um = n_distinct(month), .groups = "drop") %>%
+    filter(uy >= min_years & um >= min_months) %>%
+    pull(combined_station)
+
+  stk2 <- data %>%
+    filter(year %in% year_range) %>%
+    drop_na(!!sym(prob_col)) %>%
+    group_by(combined_station, year) %>%
+    dplyr::summarise(ud = n_distinct(doy), .groups = "drop") %>%
+    filter(ud >= min_doy_per_year) %>%
+    pull(combined_station) %>%
+    unique()
+
+  intersect(stk1, stk2)
+}
+
+####### Function to calculate seawater density #######
 calc_seawater_density <- function(temp, sal) {
   999.842594 +
     6.793952e-2 * temp -
@@ -376,7 +431,9 @@ log_transform <- function(x) {
   return(result)
 }
 
-####### Function to perform probability of presence GLMs ####### 
+####### Function to perform probability of presence GLMs #######
+# prob_col: name of the binary 0/1 probability column to model (default: "probability")
+# stations_mc: vector of stations that have both 0 and 1 for this prob_col (per-genus)
 check_and_fit <- function(data,
                           each_group,
                           result_month_name,
@@ -384,242 +441,223 @@ check_and_fit <- function(data,
                           predicted_probs_name,
                           results_list_name,
                           result_doy_name,
-                          result_doy_gam_name) {
+                          result_doy_gam_name,
+                          prob_col  = "probability",
+                          stations_mc = NULL) {
   if (!exists(results_list_name, envir = .GlobalEnv)) {
     assign(
       results_list_name,
       list(
-        result_month = data.frame(),
-        result_year = data.frame(),
+        result_month    = data.frame(),
+        result_year     = data.frame(),
         predicted_probs = data.frame()
       ),
       envir = .GlobalEnv
     )
   }
-  
-  if (!exists(each_group, where = global_models_list)) {
-    global_models_list[[each_group]] <- list()
+
+  # Use a genus-namespaced global_models_list to avoid collisions across genera
+  gml_name <- paste0("global_models_list_", gsub("probability_?", "", prob_col))
+  if (!exists(gml_name, envir = .GlobalEnv)) {
+    assign(gml_name, list(), envir = .GlobalEnv)
   }
-  
-  result_month <- data.frame()
-  result_year <- data.frame()
-  result_doy <- data.frame()
-  result_doy_gam <- data.frame()
+  global_models_list_local <- get(gml_name, envir = .GlobalEnv)
+  if (!each_group %in% names(global_models_list_local)) {
+    global_models_list_local[[each_group]] <- list()
+  }
+
+  result_month       <- data.frame()
+  result_year        <- data.frame()
+  result_doy         <- data.frame()
+  result_doy_gam     <- data.frame()
   predicted_probs_df <- data.frame()
-  
+
   results_list <- get(results_list_name, envir = .GlobalEnv)
   grouping_var <- "station"
 
+  # Determine qualifying stations for this prob_col
+  if (is.null(stations_mc)) {
+    stations_mc <- unique(data$station)
+  }
+
   data <- data %>%
-    filter(!is.na(probability) &
-             station %in% stations_matching_condition)
-  
+    filter(!is.na(.data[[prob_col]]) &
+             station %in% stations_mc)
+
   present_years_only <- data %>%
-    filter(!!rlang::sym(grouping_var) == each_group) %>% 
-    drop_na(cells_L) %>%
+    filter(!!rlang::sym(grouping_var) == each_group) %>%
     mutate(limiting_conditions = as.factor(limiting_conditions),
            strat = as.factor(strat))
-  
+
   presence_years <-
-    present_years_only %>% 
-    filter(year >= 2007 & probability == 1) %>% 
-    pull(year) %>% 
+    present_years_only %>%
+    filter(year >= 2007 & .data[[prob_col]] == 1L) %>%
+    pull(year) %>%
     unique()
-  
+
+  if (length(presence_years) == 0) return(invisible(NULL))
   first_year_for_model <- min(presence_years)
-  
-  present_years_only2 <- present_years_only %>% 
+
+  present_years_only2 <- present_years_only %>%
     filter(year >= first_year_for_model)
-  
-  if (sum(present_years_only$probability == 0) >= 2 &
-      sum(present_years_only$probability == 1) >= 2 &
-      length(unique(present_years_only$year)) > 3 &
+
+  if (sum(present_years_only[[prob_col]] == 0L, na.rm = TRUE) >= 2 &
+      sum(present_years_only[[prob_col]] == 1L, na.rm = TRUE) >= 2 &
+      length(unique(present_years_only$year))  > 3 &
       length(unique(present_years_only$month)) > 3) {
 
-    M1 <-
-      glm(
-        factor(probability) ~ factor(month) + 0,
-        data = present_years_only %>% drop_na(probability),
-        family = "binomial"
-      ) 
-    global_models_list[[each_group]]$probability_month <- M1
-    
-    M1a <-
-      glm(
-        factor(probability) ~ factor(doy) + 0,
-        data = present_years_only %>% drop_na(probability),
-        family = "binomial"
-      ) 
-    global_models_list[[each_group]]$probability_doy <- M1a
-    
-    if (nlevels(as.factor(as.character(present_years_only$limiting_conditions))) >= 2) {
-      
-      M1_lim <-
-        glm(
-          factor(limiting_conditions) ~ factor(month) + 0,
-          data = present_years_only %>% drop_na(limiting_conditions),
-          family = "binomial"
-        )
-      global_models_list[[each_group]]$limiting_conditions_month <- M1_lim
-    }
-    
-    if (nlevels(as.factor(as.character(present_years_only$strat))) >= 2) {
-      
-      M1_strat <-
-        glm(
-          factor(strat) ~ factor(month) + 0,
-          data = present_years_only %>% drop_na(strat),
-          family = "binomial"
-        ) 
-      global_models_list[[each_group]]$strat_month <- M1_strat
-    }
-    
-    M1a_gam <- mgcv::gam(
-      data = present_years_only %>% drop_na(probability),
-      probability ~ s(doy, bs = "cp"),
-      family = binomial,
-      knots = list(x = c(0, 365))
+    M1 <- glm(
+      as.formula(paste0("factor(", prob_col, ") ~ factor(month) + 0")),
+      data   = present_years_only %>% drop_na(!!sym(prob_col)),
+      family = "binomial"
     )
-    global_models_list[[each_group]]$probability_doy_gam <- M1a_gam
-    
-    M1a_gam_predict <- predict(M1a_gam, se.fit = TRUE)
-    
-    M2 <-
-      glm(
-        factor(probability) ~ factor(year) + 0,
-        data = present_years_only  %>% drop_na(probability),
-        family = "binomial"
-      ) 
-    global_models_list[[each_group]]$probability_year <- M2
+    global_models_list_local[[each_group]]$probability_month <- M1
 
-    present_years_only$month <-
-      as.character(present_years_only$month)
-    
-    CI_M1 = confint(M1, level = 0.95)[, 1]
+    M1a <- glm(
+      as.formula(paste0("factor(", prob_col, ") ~ factor(doy) + 0")),
+      data   = present_years_only %>% drop_na(!!sym(prob_col)),
+      family = "binomial"
+    )
+    global_models_list_local[[each_group]]$probability_doy <- M1a
+
+    if (nlevels(as.factor(as.character(present_years_only$limiting_conditions))) >= 2) {
+      M1_lim <- glm(
+        factor(limiting_conditions) ~ factor(month) + 0,
+        data   = present_years_only %>% drop_na(limiting_conditions),
+        family = "binomial"
+      )
+      global_models_list_local[[each_group]]$limiting_conditions_month <- M1_lim
+    }
+
+    if (nlevels(as.factor(as.character(present_years_only$strat))) >= 2) {
+      M1_strat <- glm(
+        factor(strat) ~ factor(month) + 0,
+        data   = present_years_only %>% drop_na(strat),
+        family = "binomial"
+      )
+      global_models_list_local[[each_group]]$strat_month <- M1_strat
+    }
+
+    M1a_gam <- mgcv::gam(
+      as.formula(paste0(prob_col, " ~ s(doy, bs = 'cp')")),
+      data   = present_years_only %>% drop_na(!!sym(prob_col)),
+      family = binomial,
+      knots  = list(x = c(0, 365))
+    )
+    global_models_list_local[[each_group]]$probability_doy_gam <- M1a_gam
+
+    M1a_gam_predict <- predict(M1a_gam, se.fit = TRUE)
+
+    M2 <- glm(
+      as.formula(paste0("factor(", prob_col, ") ~ factor(year) + 0")),
+      data   = present_years_only %>% drop_na(!!sym(prob_col)),
+      family = "binomial"
+    )
+    global_models_list_local[[each_group]]$probability_year <- M2
+
+    present_years_only$month <- as.character(present_years_only$month)
+
+    CI_M1 <- confint(M1, level = 0.95)[, 1]
 
     result_month <- data.frame(
-      data = exp(coef(M1)) / (1 + exp(coef(M1))),
-      month = unlist(str_extract_all(
-        names(coef(M1)), "\\d+\\.?\\d*|\\.\\d+"
-      )),
-      CI = exp(CI_M1) / (1 + exp(CI_M1))
+      data  = exp(coef(M1)) / (1 + exp(coef(M1))),
+      month = unlist(str_extract_all(names(coef(M1)), "\\d+\\.?\\d*|\\.\\d+")),
+      CI    = exp(CI_M1) / (1 + exp(CI_M1))
     )
-    
+
     if (exists("M1_lim")) {
       limiting_conditions_df <- data.frame(
-        month = unlist(str_extract_all(
-          names(coef(M1_lim)), "\\d+\\.?\\d*|\\.\\d+"
-        )),
+        month              = unlist(str_extract_all(names(coef(M1_lim)), "\\d+\\.?\\d*|\\.\\d+")),
         limiting_conditions = exp(coef(M1_lim)) / (1 + exp(coef(M1_lim)))
       )
     }
-    
+
     if (exists("M1_strat")) {
-      strat_df <- data.frame(month = unlist(str_extract_all(
-        names(coef(M1_strat)), "\\d+\\.?\\d*|\\.\\d+"
-      )),
-      strat = exp(coef(M1_strat)) / (1 + exp(coef(M1_strat))))
+      strat_df <- data.frame(
+        month = unlist(str_extract_all(names(coef(M1_strat)), "\\d+\\.?\\d*|\\.\\d+")),
+        strat = exp(coef(M1_strat)) / (1 + exp(coef(M1_strat)))
+      )
     }
 
     if (exists("limiting_conditions_df")) {
-      result_month <-
-        merge(result_month,
-              limiting_conditions_df,
-              by = "month",
-              all = TRUE)
+      result_month <- merge(result_month, limiting_conditions_df, by = "month", all = TRUE)
     }
-    
+
     if (exists("strat_df")) {
-      result_month <-
-        merge(result_month, strat_df, by = "month", all = TRUE)
+      result_month <- merge(result_month, strat_df, by = "month", all = TRUE)
     }
-    
-    result_month[[grouping_var]] = as.factor(each_group)
-    
-    CI_M2 = confint(M2, level = 0.95)[, 1]
-    
+
+    result_month[[grouping_var]] <- as.factor(each_group)
+
+    CI_M2 <- confint(M2, level = 0.95)[, 1]
+
     result_year <- data.frame(
       data = exp(coef(M2)) / (1 + exp(coef(M2))),
-      year = as.numeric(unlist(
-        str_extract_all(names(coef(M2)), "\\d+\\.?\\d*|\\.\\d+")
-      )),
-      CI = exp(CI_M2) / (1 + exp(CI_M2))
+      year = as.numeric(unlist(str_extract_all(names(coef(M2)), "\\d+\\.?\\d*|\\.\\d+"))),
+      CI   = exp(CI_M2) / (1 + exp(CI_M2))
     )
-    
-    result_year[[grouping_var]] = as.factor(each_group)
-    
-    result_doy <- bind_rows(result_doy,
-                            data.frame(
-                              data = exp(coef(M1a)) / (1 + exp(coef(M1a))),
-                              doy = unlist(str_extract_all(
-                                names(coef(M1a)), "\\d+\\.?\\d*|\\.\\d+"
-                              ))
-                            ))
-    
-    result_doy[[grouping_var]] = as.factor(each_group)
-    
+
+    result_year[[grouping_var]] <- as.factor(each_group)
+
+    result_doy <- bind_rows(
+      result_doy,
+      data.frame(
+        data = exp(coef(M1a)) / (1 + exp(coef(M1a))),
+        doy  = unlist(str_extract_all(names(coef(M1a)), "\\d+\\.?\\d*|\\.\\d+"))
+      )
+    )
+
+    result_doy[[grouping_var]] <- as.factor(each_group)
+
     result_doy_gam <- data.frame(
-      data = NA,
-      doy = present_years_only$doy,
-      CI = NA,
+      data  = NA,
+      doy   = present_years_only$doy,
+      CI    = NA,
       p_val = NA
     )
-    
-    if (exists("M1a_gam")) {
-      result_doy_gam$p_val = summary(M1a_gam)$p.pv[[1]]
-    }
-    
+
+    result_doy_gam$p_val <- summary(M1a_gam)$p.pv[[1]]
+
     if (summary(M1a_gam)$p.pv < 0.1) {
-      result_doy_gam$data <-
-        exp(M1a_gam_predict$fit) / (1 + exp(M1a_gam_predict$fit))
-      result_doy_gam$CI <-
-        exp(M1a_gam_predict$se.fit) / (1 + exp(M1a_gam_predict$se.fit))
+      result_doy_gam$data <- exp(M1a_gam_predict$fit)  / (1 + exp(M1a_gam_predict$fit))
+      result_doy_gam$CI   <- exp(M1a_gam_predict$se.fit) / (1 + exp(M1a_gam_predict$se.fit))
     }
-    
-    result_doy_gam[[grouping_var]] = as.factor(each_group)
-    
-    model <-
-      glm(
-        cbind(as.numeric(as.character(probability)), 1 - as.numeric(as.character(probability))) ~ year,
-        data = present_years_only2 %>% drop_na(probability),
-        family = binomial
-      )
-    
-    global_models_list[[each_group]]$probability_year_log_reg <- model
-    assign("global_models_list", global_models_list, envir = .GlobalEnv)
-    
-    max_year <- max(present_years_only2$year)
-    years <- seq(first_year_for_model, max_year, by = 1)
-    
-    predicted_probs <-
-      predict(model, newdata = data.frame(year = years), type = "response")
-    
-    predicted_probs_df <-  bind_rows(
-      predicted_probs_df,
-      data.frame(year = years,
-                 predicted_probability = predicted_probs,
-                 p_val = rep(summary(model)$coefficients[1,4], length.out = length(years)))
+
+    result_doy_gam[[grouping_var]] <- as.factor(each_group)
+
+    p_vec <- as.integer(as.character(present_years_only2[[prob_col]]))
+    model <- glm(
+      cbind(p_vec, 1L - p_vec) ~ year,
+      data   = present_years_only2 %>% drop_na(!!sym(prob_col)),
+      family = binomial
     )
-    
-    predicted_probs_df[[grouping_var]] = as.factor(each_group)
-    
-    results_list[[result_month_name]] <-
-      bind_rows(results_list[[result_month_name]], result_month)
-    
-    results_list[[result_year_name]] <-
-      bind_rows(results_list[[result_year_name]], result_year)
-    
-    results_list[[predicted_probs_name]] <-
-      bind_rows(results_list[[predicted_probs_name]], predicted_probs_df)
-    
-    results_list[[result_doy_name]] <-
-      bind_rows(results_list[[result_doy_name]], result_doy)
-    
-    results_list[[result_doy_gam_name]] <-
-      bind_rows(results_list[[result_doy_gam_name]], result_doy_gam)
-    
+
+    global_models_list_local[[each_group]]$probability_year_log_reg <- model
+    assign(gml_name, global_models_list_local, envir = .GlobalEnv)
+
+    max_year <- max(present_years_only2$year)
+    years    <- seq(first_year_for_model, max_year, by = 1)
+
+    predicted_probs <- predict(model, newdata = data.frame(year = years), type = "response")
+
+    predicted_probs_df <- bind_rows(
+      predicted_probs_df,
+      data.frame(
+        year                  = years,
+        predicted_probability = predicted_probs,
+        p_val = rep(summary(model)$coefficients[1, 4], length.out = length(years))
+      )
+    )
+
+    predicted_probs_df[[grouping_var]] <- as.factor(each_group)
+
+    results_list[[result_month_name]]  <- bind_rows(results_list[[result_month_name]],  result_month)
+    results_list[[result_year_name]]   <- bind_rows(results_list[[result_year_name]],   result_year)
+    results_list[[predicted_probs_name]] <- bind_rows(results_list[[predicted_probs_name]], predicted_probs_df)
+    results_list[[result_doy_name]]    <- bind_rows(results_list[[result_doy_name]],    result_doy)
+    results_list[[result_doy_gam_name]] <- bind_rows(results_list[[result_doy_gam_name]], result_doy_gam)
+
     assign(results_list_name, results_list, envir = .GlobalEnv)
-    
     return(results_list_name)
   }
 }
@@ -764,19 +802,27 @@ custom_labeller <- function(variable) {
   return(titles[variable])
 }
 
-####### Function to construct seasonal means plot ####### 
-create_seasonal_means_plot <- function(facet_name, label) {
+####### Function to construct seasonal means plot #######
+# genus: optional genus name key used for y-axis label (e.g. "Alexandrium").
+#        If NULL, uses generic "any harmful algae" label.
+create_seasonal_means_plot <- function(facet_name, label, genus = NULL) {
+
+  y_label <- if (!is.null(genus) && genus %in% names(genus_display_names)) {
+    paste0("Probability of presence<br> of ", genus_display_names[[genus]])
+  } else {
+    "Probability of presence<br> of any harmful algae"
+  }
 
   p_subset <- sa_plot %>%
     filter(parameter == facet_name & probability > 0) %>%
     drop_na(probability, data)
-  
+
   p <- ggplot(p_subset, aes(x = data, y = probability)) +
     geom_point(size = 1.5) +
     facet_wrap(
       ~ parameter,
-      scales = "free_x",
-      labeller = labeller(parameter = custom_labeller),
+      scales       = "free_x",
+      labeller     = labeller(parameter = custom_labeller),
       strip.position = "bottom"
     ) +
     scale_y_continuous(
@@ -785,24 +831,25 @@ create_seasonal_means_plot <- function(facet_name, label) {
       labels = seq(0, 0.5, 0.1),
       expand = c(0, 0)
     ) +
-    scale_x_continuous(limits = c(min(p_subset$data)*0.95, max(p_subset$data)*1.05)) +
+    scale_x_continuous(limits = c(min(p_subset$data) * 0.95, max(p_subset$data) * 1.05)) +
     theme_classic() +
-    theme(plot.title = element_markdown(face = "bold"),
-          panel.grid.major = element_blank(),
-          panel.grid.minor = element_blank(),
-      panel.background = element_rect(fill = 'white'),
-      legend.title = element_blank(),
-      legend.text = element_markdown(),
-      axis.title.y = element_markdown(size = 12),
+    theme(
+      plot.title       = element_markdown(face = "bold"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      legend.title     = element_blank(),
+      legend.text      = element_markdown(),
+      axis.title.y     = element_markdown(size = 12),
       strip.background = element_blank(),
-      axis.text = element_markdown(size = 10),
-      strip.text = element_markdown(),
-      strip.placement = "outside",
-      legend.position = "top"
+      axis.text        = element_markdown(size = 10),
+      strip.text       = element_markdown(),
+      strip.placement  = "outside",
+      legend.position  = "top"
     ) +
     xlab("") +
-    ylab("Probability of presence<br> of <i>A. pseudogonyaulax</i>") +
-    ggtitle(paste0(label, ")"))  
+    ylab(y_label) +
+    ggtitle(paste0(label, ")"))
   return(p)
 }
 
@@ -915,7 +962,7 @@ process_data <- function(data,
       cat("Parameter being analysed:", parameter, "\n")
       
       param_data <- data %>%
-        drop_na(!!rlang::sym(parameter), probability)
+        drop_na(!!rlang::sym(parameter), !!rlang::sym(prob_col))
       
       years_of_presence2 <- years_of_presence %>%
         filter(species == prob_col) %>%
@@ -967,8 +1014,8 @@ process_data <- function(data,
         
         for (i in 1:n_bootstraps) {
           boot_sample <- param_data %>%
-            drop_na(parameter, probability) %>%
-            group_by(probability) %>%
+            drop_na(!!sym(parameter), !!sym(prob_col)) %>%
+            group_by(!!sym(prob_col)) %>%
             group_modify(~ slice_sample(.x, n = nrow(.x), replace = TRUE)) %>%
             ungroup()
           
@@ -996,9 +1043,9 @@ process_data <- function(data,
           if (parameter %in% c("strat", "limiting_conditions") &
               length(na.omit(unique(boot_sample[[parameter]]))) >= 2) {
             M <- glm(
-              data = boot_sample,
-              formula = parameter ~ year + month + factor(probability) + 0,
-              family = "binomial"
+              data    = boot_sample,
+              formula = as.formula(paste0(parameter, " ~ year + month + factor(", prob_col, ") + 0")),
+              family  = "binomial"
             )
           }
           
@@ -1349,17 +1396,24 @@ create_plot <-
            x_var,
            title_var,
            save_path,
-           filename) {
+           filename,
+           genus = NULL) {
 
     plots <- list()
-    
+
+    y_lab <- if (!is.null(genus) && genus %in% names(genus_display_names)) {
+      paste0("Probability of presence of ", genus_display_names[[genus]])
+    } else {
+      "Probability of presence"
+    }
+
     gg <-
       ggplot(data, aes(
         x = !!sym(x_var),
         y = data,
         group = !!sym(group_var)
       )) +
-      ylab("probability") +
+      ylab(y_lab) +
       xlab(x_var) +
       ggtitle(title_var) +
       theme_classic() +
@@ -1471,7 +1525,8 @@ create_plot2 <-
            group_var,
            x_var,
            station_number,
-           each_station) {
+           each_station,
+           genus = NULL) {
     gg <-
       ggplot(data, aes(
         x = !!sym(x_var),
