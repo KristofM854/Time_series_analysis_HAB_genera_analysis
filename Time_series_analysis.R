@@ -1829,17 +1829,27 @@ filtered_data$DIN_DIP <- filtered_data$DIN / filtered_data$DIP
 
 # Bootstrap environmental deviation analysis – run for ALL probability columns (overall + per genus).
 # process_data() accepts a vector of probability columns and loops internally.
-station_parameters_coefficients <-
-  lapply(seq_along(stations), function(i) {
-    each_station <- stations[i]
-    cat("Station being analysed:", each_station, "- Station", i, "of", total_stations, "\n")
+
+# Pre-split by station once so each worker reads a small named element instead
+# of running filter() against the full dataset on every iteration.
+filtered_data_split <- split(filtered_data, filtered_data$station)
+years_split         <- split(years_since_first_observation,
+                             years_since_first_observation$station)
+
+n_cores <- max(1L, parallel::detectCores() - 1L)
+message(sprintf("Bootstrap analysis: %d stations across %d cores", total_stations, n_cores))
+
+station_parameters_coefficients <- parallel::mclapply(
+  stations,
+  function(each_station) {
     tryCatch({
-      station_data  <- filtered_data %>% filter(station == each_station)
-      years_station <- years_since_first_observation %>%
-        filter(station == each_station) %>%
-        ungroup() %>%
-        dplyr::select(year, species)
-      # Pass all probability columns that have presence data at this station
+      station_data  <- filtered_data_split[[each_station]]
+      years_station <- if (!is.null(years_split[[each_station]])) {
+        years_split[[each_station]] %>% ungroup() %>% dplyr::select(year, species)
+      } else {
+        data.frame(year = integer(), species = character())
+      }
+      # Pass only probability columns that have at least one presence at this station
       pc_here <- all_prob_cols[sapply(all_prob_cols, function(pc) {
         pc %in% colnames(station_data) &&
           any(station_data[[pc]] == 1L, na.rm = TRUE)
@@ -1850,13 +1860,16 @@ station_parameters_coefficients <-
         years_station,
         c("NO3", "PO4", "temp", "sal", "silicate", "N_P"),
         each_station,
-        pc_here   # vector: process_data loops over each internally
+        pc_here
       )
     }, error = function(e) {
       message(sprintf("Error processing station %s: %s", each_station, e$message))
-      return(NULL)
+      NULL
     })
-  })
+  },
+  mc.cores    = n_cores,
+  mc.set.seed = TRUE   # each worker gets a unique seed derived from the parent seed
+)
 
 # Combine the results into data frames and change the format
 Coef_stations <- do.call(rbind, lapply(station_parameters_coefficients, function(station_results) {
