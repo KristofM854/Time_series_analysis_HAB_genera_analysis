@@ -70,6 +70,38 @@ prob_col_name  <- function(genus) paste0("probability_", genus)
 cells_col_name <- function(genus) paste0("cells_L_", genus)
 risk_col_name  <- function(genus) paste0("risk_level_", genus)
 
+# Mapping from genera_of_interest keys to the actual value stored in the 'genus' column.
+# Required because "Pseudo-nitzschia" in the data != "Pseudonitzschia" column-name suffix.
+genus_data_names <- c(
+  Alexandrium       = "Alexandrium",
+  Dinophysis        = "Dinophysis",
+  Pseudonitzschia   = "Pseudo-nitzschia",
+  Azadinium         = "Azadinium",
+  Chrysochromulina  = "Chrysochromulina",
+  Prymnesium        = "Prymnesium",
+  Amphidinium       = "Amphidinium",
+  Pseudochattonella = "Pseudochattonella",
+  Phaeocystis       = "Phaeocystis",
+  Karlodinium       = "Karlodinium",
+  Cyanobacteria     = "Cyanobacteria"
+)
+
+# Apply the standard 4-level risk classification (None/Low/Moderate/High) to all
+# genera in-place, deriving risk_level_<Genus> from cells_L_<Genus>.
+apply_risk_levels <- function(data) {
+  for (g in genera_of_interest) {
+    cc <- cells_col_name(g)
+    rc <- risk_col_name(g)
+    data[[rc]] <- dplyr::case_when(
+      data[[cc]] >= 10000 ~ "High",
+      data[[cc]] >= 1000  ~ "Moderate",
+      data[[cc]] > 0      ~ "Low",
+      TRUE                ~ "None"
+    )
+  }
+  data
+}
+
 ####### Helper function for qualifying station selection (used in Phase 1 station filtering) #######
 get_qualifying_stations <- function(data, prob_col,
                                     min_years        = 8,

@@ -7,7 +7,6 @@
 ##########################################
 ####### Load custom functions ####### 
 script_dir <- setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-script_dir <- setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 source(paste0(script_dir, "/", "Time_series_analysis_custom_functions.R"))
 
 # Install needed packages
@@ -227,52 +226,25 @@ norway_combined_probs <- norway_combined %>%
       all(is.na(probability))              ~ NA_integer_,
       TRUE                                 ~ 0L
     ),
-    # Individual genus probabilities (1/0/NA)
-    probability_Alexandrium = case_when(
-      any(probability_Alexandrium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Alexandrium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Dinophysis = case_when(
-      any(probability_Dinophysis == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Dinophysis))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Pseudonitzschia = case_when(
-      any(probability_Pseudonitzschia == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Pseudonitzschia))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Azadinium = case_when(
-      any(probability_Azadinium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Azadinium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Chrysochromulina = case_when(
-      any(probability_Chrysochromulina == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Chrysochromulina))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Prymnesium = case_when(
-      any(probability_Prymnesium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Prymnesium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Amphidinium = case_when(
-      any(probability_Amphidinium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Amphidinium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Pseudochattonella = case_when(
-      any(probability_Pseudochattonella == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Pseudochattonella))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Phaeocystis = case_when(
-      any(probability_Phaeocystis == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Phaeocystis))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Karlodinium = case_when(
-      any(probability_Karlodinium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Karlodinium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Cyanobacteria = case_when(
-      any(probability_Cyanobacteria == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Cyanobacteria))              ~ NA_integer_, TRUE ~ 0L),
+    # Individual genus probabilities (1/0/NA) — one across() replaces 11 repeated case_when blocks
+    across(
+      all_of(sapply(genera_of_interest, prob_col_name)),
+      ~ case_when(any(. == 1L, na.rm = TRUE) ~ 1L,
+                  all(is.na(.))              ~ NA_integer_,
+                  TRUE                       ~ 0L)
+    ),
     # Genus-level cell concentration totals per date/station
-    cells_L_Alexandrium      = sum(ifelse(genus == "Alexandrium",       cells_L, 0), na.rm = TRUE),
-    cells_L_Dinophysis       = sum(ifelse(genus == "Dinophysis",        cells_L, 0), na.rm = TRUE),
-    cells_L_Pseudonitzschia  = sum(ifelse(genus == "Pseudo-nitzschia",  cells_L, 0), na.rm = TRUE),
-    cells_L_Azadinium        = sum(ifelse(genus == "Azadinium",         cells_L, 0), na.rm = TRUE),
-    cells_L_Chrysochromulina = sum(ifelse(genus == "Chrysochromulina",  cells_L, 0), na.rm = TRUE),
-    cells_L_Prymnesium       = sum(ifelse(genus == "Prymnesium",        cells_L, 0), na.rm = TRUE),
-    cells_L_Amphidinium      = sum(ifelse(genus == "Amphidinium",       cells_L, 0), na.rm = TRUE),
-    cells_L_Pseudochattonella = sum(ifelse(genus == "Pseudochattonella", cells_L, 0), na.rm = TRUE),
-    cells_L_Phaeocystis      = sum(ifelse(genus == "Phaeocystis",       cells_L, 0), na.rm = TRUE),
-    cells_L_Karlodinium      = sum(ifelse(genus == "Karlodinium",       cells_L, 0), na.rm = TRUE),
-    cells_L_Cyanobacteria    = sum(ifelse(genus == "Cyanobacteria",     cells_L, 0), na.rm = TRUE),
+    cells_L_Alexandrium       = sum(cells_L[genus == "Alexandrium"],       na.rm = TRUE),
+    cells_L_Dinophysis        = sum(cells_L[genus == "Dinophysis"],        na.rm = TRUE),
+    cells_L_Pseudonitzschia   = sum(cells_L[genus == "Pseudo-nitzschia"],  na.rm = TRUE),
+    cells_L_Azadinium         = sum(cells_L[genus == "Azadinium"],         na.rm = TRUE),
+    cells_L_Chrysochromulina  = sum(cells_L[genus == "Chrysochromulina"],  na.rm = TRUE),
+    cells_L_Prymnesium        = sum(cells_L[genus == "Prymnesium"],        na.rm = TRUE),
+    cells_L_Amphidinium       = sum(cells_L[genus == "Amphidinium"],       na.rm = TRUE),
+    cells_L_Pseudochattonella = sum(cells_L[genus == "Pseudochattonella"], na.rm = TRUE),
+    cells_L_Phaeocystis       = sum(cells_L[genus == "Phaeocystis"],       na.rm = TRUE),
+    cells_L_Karlodinium       = sum(cells_L[genus == "Karlodinium"],       na.rm = TRUE),
+    cells_L_Cyanobacteria     = sum(cells_L[genus == "Cyanobacteria"],     na.rm = TRUE),
     # Keep first value of categorical/date-component fields
     across(c(day, month, year, doy, strat, species, genus, toxin_syndrome, harmful_algae), first),
     .groups = "drop"
@@ -298,20 +270,7 @@ norway_combined <- left_join(norway_combined_probs, norway_combined_num,
                               by = c("date", "station"))
 
 # Step 4: Compute risk classification levels from aggregated genus-specific cell concentrations
-norway_combined <- norway_combined %>%
-  mutate(
-    risk_level_Alexandrium     = case_when(cells_L_Alexandrium     >= 10000 ~ "High", cells_L_Alexandrium     >= 1000 ~ "Moderate", cells_L_Alexandrium     > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Dinophysis      = case_when(cells_L_Dinophysis      >= 10000 ~ "High", cells_L_Dinophysis      >= 1000 ~ "Moderate", cells_L_Dinophysis      > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Pseudonitzschia = case_when(cells_L_Pseudonitzschia >= 10000 ~ "High", cells_L_Pseudonitzschia >= 1000 ~ "Moderate", cells_L_Pseudonitzschia > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Azadinium       = case_when(cells_L_Azadinium       >= 10000 ~ "High", cells_L_Azadinium       >= 1000 ~ "Moderate", cells_L_Azadinium       > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Chrysochromulina = case_when(cells_L_Chrysochromulina >= 10000 ~ "High", cells_L_Chrysochromulina >= 1000 ~ "Moderate", cells_L_Chrysochromulina > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Prymnesium      = case_when(cells_L_Prymnesium      >= 10000 ~ "High", cells_L_Prymnesium      >= 1000 ~ "Moderate", cells_L_Prymnesium      > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Amphidinium     = case_when(cells_L_Amphidinium     >= 10000 ~ "High", cells_L_Amphidinium     >= 1000 ~ "Moderate", cells_L_Amphidinium     > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Pseudochattonella = case_when(cells_L_Pseudochattonella >= 10000 ~ "High", cells_L_Pseudochattonella >= 1000 ~ "Moderate", cells_L_Pseudochattonella > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Phaeocystis     = case_when(cells_L_Phaeocystis     >= 10000 ~ "High", cells_L_Phaeocystis     >= 1000 ~ "Moderate", cells_L_Phaeocystis     > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Karlodinium     = case_when(cells_L_Karlodinium     >= 10000 ~ "High", cells_L_Karlodinium     >= 1000 ~ "Moderate", cells_L_Karlodinium     > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Cyanobacteria   = case_when(cells_L_Cyanobacteria   >= 10000 ~ "High", cells_L_Cyanobacteria   >= 1000 ~ "Moderate", cells_L_Cyanobacteria   > 0 ~ "Low", TRUE ~ "None")
-  )
+norway_combined <- apply_risk_levels(norway_combined)
 
 # Save norway_combined as a new txt.file
 write.table(norway_combined,
@@ -422,11 +381,10 @@ denmark_ctd <- strat_index(denmark_ctd)
 
 # Average physical parameters of CTD data over the whole water column (0-10m)
 denmark_ctd <- denmark_ctd %>%
- group_by(date, year, month, day, strat, station, lat, lon) %>%
-  mutate(across(all_of(c(1:5)), ~ as.numeric(.))) %>%
-         filter(depth < 10) %>%
- dplyr::summarise_if(is.numeric, mean, na.rm = TRUE) %>%
- ungroup()
+  mutate(across(c(depth, sal, temp, Chl, density), as.numeric)) %>%
+  group_by(date, year, month, day, strat, station, lat, lon) %>%
+  filter(depth < 10) %>%
+  dplyr::summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop")
 
 # General data transformations: Microalgae counts data ####### 
 # Replace underscores with spaces in species names and classify into 11 harmful genera
@@ -453,31 +411,27 @@ denmark_counts <- full_join(denmark_counts, harmful_algae_intermediate)
 
 denmark_counts <- left_join(denmark_counts, denmark_carbon, by = c("station", "date"))
 
-# summarize all numeric columns
+# Re-summarize CTD and water quality to one row per station/date
 denmark_ctd <- denmark_ctd %>%
- group_by(station, date, strat) %>%
   mutate(year = as.numeric(year), month = as.numeric(month)) %>%
- dplyr::summarise_if(is.numeric, mean, na.rm = TRUE)
+  group_by(station, date, strat) %>%
+  dplyr::summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop")
 
 denmark_waterquality <- denmark_waterquality %>%
- group_by(station, date, lat, lon) %>%
-  mutate(across(everything(), ~ as.numeric(.))) %>%
- dplyr::summarise_if(is.numeric, mean, na.rm = TRUE)
+  mutate(across(everything(), as.numeric)) %>%
+  group_by(station, date, lat, lon) %>%
+  dplyr::summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop")
 
-# Merge all data files #####
-denmark_secci_kd <- denmark_secci_kd %>% mutate(across(all_of(c("year", "month", "Kd", "Secci", "day")), ~ as.numeric(.)))
-denmark_counts <- denmark_counts %>% mutate(across(all_of(c("year", "month", "lon", "lat", "day", "Cell_vol(µm3)", "C_(µgC_L-1)")), ~ as.numeric(.)))
-
-denmark_combined <- denmark_counts %>%
- full_join(denmark_waterquality) %>%
- full_join(denmark_ctd) %>%
- full_join(denmark_secci_kd)
+denmark_secci_kd <- denmark_secci_kd %>%
+  mutate(across(all_of(c("year", "month", "Kd", "Secci", "day")), as.numeric))
+denmark_counts <- denmark_counts %>%
+  mutate(across(all_of(c("year", "month", "lon", "lat", "day", "Cell_vol(µm3)", "C_(µgC_L-1)")), as.numeric))
 
 ####### Merge all Danish data files ####### 
 # Average abiotic parameter dataframes by date and station as they occassionally have two measurements
 denmark_counts_sub <- denmark_counts %>%
   group_by(station, date, species, harmful_algae, genus, toxin_syndrome, across(starts_with("probability"))) %>%
-  reframe(across(where(is.numeric), mean, na.rm = TRUE))
+  reframe(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)))
 
 denmark_waterquality_sub <- denmark_waterquality %>% ungroup() %>%
   dplyr::select(-day, -month, -year, -lat, -lon)
@@ -529,23 +483,16 @@ for(each_station in all_stations_denmark){
 
 denmark_combined <- do.call(rbind, denmark_list)
 
-####### Finalize dataframe ####### 
-unique_stations <- full_join(
-  full_join(
-    full_join(
-      denmark_counts %>% group_by(station) %>%
-        dplyr::summarise(lat = mean(lat, na.rm = T), lon = mean(lon, na.rm = T)),
-      denmark_waterquality %>% group_by(station) %>%
-        dplyr::summarise(lat = mean(lat, na.rm = T), lon = mean(lon, na.rm = T))
-    ),
-    denmark_ctd %>% group_by(station) %>%
-      dplyr::summarise(lat = mean(lat, na.rm = T), lon = mean(lon, na.rm = T))
-  ),
-  denmark_secci_kd %>% group_by(station) %>%
-    dplyr::summarise(lat = mean(lat, na.rm = T), lon = mean(lon, na.rm = T))
+####### Finalize dataframe #######
+unique_stations <- bind_rows(
+  denmark_counts       %>% dplyr::select(station, lat, lon),
+  denmark_waterquality %>% dplyr::select(station, lat, lon),
+  denmark_ctd          %>% dplyr::select(station, lat, lon),
+  denmark_secci_kd     %>% dplyr::select(station, lat, lon)
 ) %>%
   group_by(station) %>%
-  dplyr::summarise(lat = mean(lat, na.rm = T), lon = mean(lon, na.rm = T))
+  dplyr::summarise(lat = mean(lat, na.rm = TRUE), lon = mean(lon, na.rm = TRUE),
+                   .groups = "drop")
 
 denmark_combined <- full_join(denmark_combined %>% ungroup() %>% dplyr::select(-lat, -lon),
                              unique_stations,
@@ -579,7 +526,7 @@ denmark_wind <- denmark_wind %>%
 
 # remove last two digits of the station name in the denmark_wind dataset to match the format in the station file
 denmark_wind <- denmark_wind %>%
- mutate_at(vars(station), ~ as.numeric(str_sub(., end = -3)))
+  mutate(station = as.numeric(str_sub(station, end = -3)))
 
 # select columns of interest
 denmark_wind_stations <- denmark_wind_stations %>%
@@ -829,22 +776,20 @@ sweden_phys[, c(3:28)] <-
  sapply(sweden_phys[, c(3:28)], function(col)
   as.numeric(gsub(",", ".", col)))
 
-# calculate the mean of both salinity and temperature columns excluding NAs and remove the redundant ones
+# Average the two temperature sensors; compute NO2+NO3 and DIN; drop redundant columns
 sweden_phys <- sweden_phys %>%
- ungroup() %>%
- mutate(
-  temp      = rowMeans(dplyr::select(., one_of("temp", "temp2")), na.rm = TRUE),
-  sal       = sal,
-  `NO2+NO3` = coalesce(NO3, 0) + coalesce(NO2, 0)
- ) %>%
- dplyr::select(-temp2, -sal2) %>%
- mutate(`NO2+NO3` = replace(`NO2+NO3`, is.na(NO3) &
-                is.na(NO2), NA)) %>%
- mutate(`NO2+NO3` = replace(`NO2+NO3`, NO2 == 0 &
-                is.na(NO3), NA)) %>%
- mutate(DIN = NH4 + `NO2+NO3`) %>% # Calculate the DIN (Dissolved Inorganic Nitrogen) concentration
- dplyr::select(-NO2, -NO3) %>%
- dplyr::rename(NO3 = 'NO2+NO3')
+  ungroup() %>%
+  mutate(
+    temp      = rowMeans(dplyr::select(., one_of("temp", "temp2")), na.rm = TRUE),
+    `NO2+NO3` = case_when(
+      is.na(NO3) & is.na(NO2) ~ NA_real_,
+      NO2 == 0   & is.na(NO3) ~ NA_real_,
+      TRUE                    ~ coalesce(NO3, 0) + coalesce(NO2, 0)
+    ),
+    DIN = NH4 + `NO2+NO3`
+  ) %>%
+  dplyr::select(-temp2, -sal2, -NO2, -NO3) %>%
+  dplyr::rename(NO3 = `NO2+NO3`)
 
 # calculate the density column
 sweden_phys <- sweden_phys %>%
@@ -853,34 +798,13 @@ sweden_phys <- sweden_phys %>%
 # Introduce stratification key if density difference exceeds 1 g/cm^3 (?!)
 sweden_phys <- strat_index(sweden_phys)
 
-# Average the physical parameters of interest over a sampling depth of 10m to mimic danish data set
-# in chunks of the dataframe because my laptop is ******* slow
-# Calculate number of chunks
-chunk_size <- 25000
-num_chunks <- ceiling(nrow(sweden_phys) / chunk_size)
-
-# Initialize an empty list to store the summarized dataframes
-summarized_dfs <- list()
-
-# Loop through each chunk, summarize it, and store the result
-for (i in 1:num_chunks) {
- start_row <- (i - 1) * chunk_size + 1
- end_row <- min(i * chunk_size, nrow(sweden_phys))
- 
- chunk <- sweden_phys[start_row:end_row,]
- 
- summarized_chunk <- chunk %>%
+# Average the physical parameters of interest over the top 10 m of the water column
+sweden_phys <- sweden_phys %>%
   drop_na(station) %>%
-  group_by(station, date, strat) %>%
   filter(depth < 10) %>%
-  dplyr::summarise_if(is.numeric, mean, na.rm = TRUE)
- 
- # Store the summarized chunk in the list
- summarized_dfs[[i]] <- summarized_chunk
-}
-
-# Combine all summarized dataframes
-sweden_phys <- do.call(rbind, summarized_dfs)
+  group_by(station, date, strat) %>%
+  dplyr::summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)),
+                   .groups = "drop")
 
 # Merge microalgae and physical parameters datasets
 sweden_abiotic <- sweden_phys %>% 
@@ -891,16 +815,14 @@ sweden_abiotic <- sweden_phys %>%
 # Get list of all unique stations
 all_stations_sweden <- unique(c(unique(sweden_phyto$station), unique(sweden_abiotic$station)))
 
-sweden_phyo <- sweden_phyto %>% mutate(date = as.Date(date))
+sweden_phyto  <- sweden_phyto  %>% mutate(date = as.Date(date))
 sweden_abiotic <- sweden_abiotic %>% mutate(date = as.Date(date))
 
 sweden_list <- list()
 for(each_station in all_stations_sweden){
-  index <- which(all_stations_sweden == each_station)
-  print(paste("Processing station", each_station, "at index", index))
-  
-  sweden_phyto_sub <- sweden_phyto %>% 
-    filter(station == each_station) 
+
+  sweden_phyto_sub <- sweden_phyto %>%
+    filter(station == each_station)
   
   sweden_abiotic_sub <- sweden_abiotic %>% 
     filter(station == each_station) 
@@ -943,7 +865,6 @@ sweden_combined <- sweden_combined %>%
     country = "Sweden"
   ) %>%
   dplyr::select(-wind_speed) %>%
-  update_dates() %>%
   filter(is.na(parameter) | parameter != "Abundance")
 
 # Save sweden_combined as a new txt.file
@@ -1227,52 +1148,25 @@ all_data_probs <- all_data %>%
       all(is.na(probability))              ~ NA_integer_,
       TRUE                                 ~ 0L
     ),
-    # Individual genus probabilities (1/0/NA)
-    probability_Alexandrium = case_when(
-      any(probability_Alexandrium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Alexandrium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Dinophysis = case_when(
-      any(probability_Dinophysis == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Dinophysis))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Pseudonitzschia = case_when(
-      any(probability_Pseudonitzschia == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Pseudonitzschia))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Azadinium = case_when(
-      any(probability_Azadinium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Azadinium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Chrysochromulina = case_when(
-      any(probability_Chrysochromulina == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Chrysochromulina))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Prymnesium = case_when(
-      any(probability_Prymnesium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Prymnesium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Amphidinium = case_when(
-      any(probability_Amphidinium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Amphidinium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Pseudochattonella = case_when(
-      any(probability_Pseudochattonella == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Pseudochattonella))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Phaeocystis = case_when(
-      any(probability_Phaeocystis == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Phaeocystis))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Karlodinium = case_when(
-      any(probability_Karlodinium == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Karlodinium))              ~ NA_integer_, TRUE ~ 0L),
-    probability_Cyanobacteria = case_when(
-      any(probability_Cyanobacteria == 1L, na.rm = TRUE) ~ 1L,
-      all(is.na(probability_Cyanobacteria))              ~ NA_integer_, TRUE ~ 0L),
-    # Genus-level cell concentration totals
-    cells_L_Alexandrium      = sum(ifelse(genus == "Alexandrium",        cells_L, 0), na.rm = TRUE),
-    cells_L_Dinophysis       = sum(ifelse(genus == "Dinophysis",         cells_L, 0), na.rm = TRUE),
-    cells_L_Pseudonitzschia  = sum(ifelse(genus == "Pseudo-nitzschia",   cells_L, 0), na.rm = TRUE),
-    cells_L_Azadinium        = sum(ifelse(genus == "Azadinium",          cells_L, 0), na.rm = TRUE),
-    cells_L_Chrysochromulina = sum(ifelse(genus == "Chrysochromulina",   cells_L, 0), na.rm = TRUE),
-    cells_L_Prymnesium       = sum(ifelse(genus == "Prymnesium",         cells_L, 0), na.rm = TRUE),
-    cells_L_Amphidinium      = sum(ifelse(genus == "Amphidinium",        cells_L, 0), na.rm = TRUE),
-    cells_L_Pseudochattonella = sum(ifelse(genus == "Pseudochattonella", cells_L, 0), na.rm = TRUE),
-    cells_L_Phaeocystis      = sum(ifelse(genus == "Phaeocystis",        cells_L, 0), na.rm = TRUE),
-    cells_L_Karlodinium      = sum(ifelse(genus == "Karlodinium",        cells_L, 0), na.rm = TRUE),
-    cells_L_Cyanobacteria    = sum(ifelse(genus == "Cyanobacteria",      cells_L, 0), na.rm = TRUE),
+    # Individual genus probabilities (1/0/NA) — one across() replaces 11 repeated case_when blocks
+    across(
+      all_of(sapply(genera_of_interest, prob_col_name)),
+      ~ case_when(any(. == 1L, na.rm = TRUE) ~ 1L,
+                  all(is.na(.))              ~ NA_integer_,
+                  TRUE                       ~ 0L)
+    ),
+    # Genus-level cell concentration totals (bracket subsetting is faster than ifelse)
+    cells_L_Alexandrium       = sum(cells_L[genus == "Alexandrium"],       na.rm = TRUE),
+    cells_L_Dinophysis        = sum(cells_L[genus == "Dinophysis"],        na.rm = TRUE),
+    cells_L_Pseudonitzschia   = sum(cells_L[genus == "Pseudo-nitzschia"],  na.rm = TRUE),
+    cells_L_Azadinium         = sum(cells_L[genus == "Azadinium"],         na.rm = TRUE),
+    cells_L_Chrysochromulina  = sum(cells_L[genus == "Chrysochromulina"],  na.rm = TRUE),
+    cells_L_Prymnesium        = sum(cells_L[genus == "Prymnesium"],        na.rm = TRUE),
+    cells_L_Amphidinium       = sum(cells_L[genus == "Amphidinium"],       na.rm = TRUE),
+    cells_L_Pseudochattonella = sum(cells_L[genus == "Pseudochattonella"], na.rm = TRUE),
+    cells_L_Phaeocystis       = sum(cells_L[genus == "Phaeocystis"],       na.rm = TRUE),
+    cells_L_Karlodinium       = sum(cells_L[genus == "Karlodinium"],       na.rm = TRUE),
+    cells_L_Cyanobacteria     = sum(cells_L[genus == "Cyanobacteria"],     na.rm = TRUE),
     # Categorical / metadata fields
     strat               = combine_strat(strat),
     limiting_conditions = combine_limiting_conditions(limiting_conditions),
@@ -1294,19 +1188,7 @@ all_data_num <- all_data %>%
 
 # Step 3: Join and compute risk classification levels
 all_data <- left_join(all_data_probs, all_data_num, by = c("combined_station", "date")) %>%
-  mutate(
-    risk_level_Alexandrium      = case_when(cells_L_Alexandrium      >= 10000 ~ "High", cells_L_Alexandrium      >= 1000 ~ "Moderate", cells_L_Alexandrium      > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Dinophysis       = case_when(cells_L_Dinophysis       >= 10000 ~ "High", cells_L_Dinophysis       >= 1000 ~ "Moderate", cells_L_Dinophysis       > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Pseudonitzschia  = case_when(cells_L_Pseudonitzschia  >= 10000 ~ "High", cells_L_Pseudonitzschia  >= 1000 ~ "Moderate", cells_L_Pseudonitzschia  > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Azadinium        = case_when(cells_L_Azadinium        >= 10000 ~ "High", cells_L_Azadinium        >= 1000 ~ "Moderate", cells_L_Azadinium        > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Chrysochromulina = case_when(cells_L_Chrysochromulina >= 10000 ~ "High", cells_L_Chrysochromulina >= 1000 ~ "Moderate", cells_L_Chrysochromulina > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Prymnesium       = case_when(cells_L_Prymnesium       >= 10000 ~ "High", cells_L_Prymnesium       >= 1000 ~ "Moderate", cells_L_Prymnesium       > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Amphidinium      = case_when(cells_L_Amphidinium      >= 10000 ~ "High", cells_L_Amphidinium      >= 1000 ~ "Moderate", cells_L_Amphidinium      > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Pseudochattonella = case_when(cells_L_Pseudochattonella >= 10000 ~ "High", cells_L_Pseudochattonella >= 1000 ~ "Moderate", cells_L_Pseudochattonella > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Phaeocystis      = case_when(cells_L_Phaeocystis      >= 10000 ~ "High", cells_L_Phaeocystis      >= 1000 ~ "Moderate", cells_L_Phaeocystis      > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Karlodinium      = case_when(cells_L_Karlodinium      >= 10000 ~ "High", cells_L_Karlodinium      >= 1000 ~ "Moderate", cells_L_Karlodinium      > 0 ~ "Low", TRUE ~ "None"),
-    risk_level_Cyanobacteria    = case_when(cells_L_Cyanobacteria    >= 10000 ~ "High", cells_L_Cyanobacteria    >= 1000 ~ "Moderate", cells_L_Cyanobacteria    > 0 ~ "Low", TRUE ~ "None")
-  ) %>%
+  apply_risk_levels() %>%
   update_dates()
 
 # Save all_data as a new txt.file
