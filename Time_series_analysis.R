@@ -300,9 +300,20 @@ denmark_ctd <-
   col_types = cols(.default = "c")
  )
 
-denmark_ctd <- denmark_ctd %>% 
- mutate(date = as.Date(date, format = "%d. %b %y")) %>% 
- mutate(day = day(date))
+month_map <- c(
+  "Mai" = "May",
+  "Mrz" = "Mar",
+  "Dez" = "Dec",
+  "Okt" = "Oct"
+)
+
+normalize_months <- function(x) {
+  stringr::str_replace_all(x, month_map)
+}
+
+denmark_ctd <- denmark_ctd  %>% 
+  mutate(date = date %>% normalize_months() %>% as.Date(format = "%d. %b %y")) %>%
+  mutate(day = day(date))
 
 # Chemical and physical water properties
 denmark_waterquality <-
@@ -315,8 +326,8 @@ denmark_waterquality <-
 
 denmark_waterquality <-
  denmark_waterquality %>% 
- mutate(date = as.Date(date, format = "%d. %b %y")) %>% 
- mutate(day = day(date))
+  mutate(date = date %>% normalize_months() %>% as.Date(format = "%d. %b %y")) %>%
+  mutate(day = day(date))
 
 # Secci depth and Kd values
 denmark_secci_kd <-
@@ -329,8 +340,8 @@ denmark_secci_kd <-
 
 denmark_secci_kd <-
  denmark_secci_kd %>% 
- mutate(date = as.Date(date, format = "%d. %b %y")) %>% 
- mutate(day = day(date))
+  mutate(date = date %>% normalize_months() %>% as.Date(format = "%d. %b %y")) %>%
+  mutate(day = day(date))
 
 # remove the -000X from the Limfjord stations as it does not match the synthax of denmark_counts
 denmark_secci_kd   <- remove_station_suffix(denmark_secci_kd)
@@ -1064,26 +1075,26 @@ write.table(germany_combined,
       row.names = FALSE)
 
 ####### MERGING OF ALL MONITORING PROGRAMS ####### 
-germany_combined = read_delim(
- paste0(script_dir, "/", "germany_combined.txt"),
- delim = "\t",
- col_names = T
-)
-sweden_combined = read_delim(
- paste0(script_dir, "/", "sweden_combined.txt"),
- delim = "\t",
- col_names = T
-)
-norway_combined = read_delim(
- paste0(script_dir, "/", "norway_combined.txt"),
- delim = "\t",
- col_names = T
-)
-denmark_combined = read_delim(
- paste0(script_dir, "/", "denmark_combined.txt"),
- delim = "\t",
- col_names = T
-)
+# germany_combined = read_delim(
+#  paste0(script_dir, "/", "germany_combined.txt"),
+#  delim = "\t",
+#  col_names = T
+# )
+# sweden_combined = read_delim(
+#  paste0(script_dir, "/", "sweden_combined.txt"),
+#  delim = "\t",
+#  col_names = T
+# )
+# norway_combined = read_delim(
+#  paste0(script_dir, "/", "norway_combined.txt"),
+#  delim = "\t",
+#  col_names = T
+# )
+# denmark_combined = read_delim(
+#  paste0(script_dir, "/", "denmark_combined.txt"),
+#  delim = "\t",
+#  col_names = T
+# )
 
 # Convert data frames to data tables
 setDT(denmark_combined)
