@@ -2083,58 +2083,74 @@ doy_grid  <- seq(0, 365, length.out = 366)
 
 set.seed(123)
 
+# Pre-split by station once — avoids repeated filter() against the full dataset
+# inside each worker (same pattern as the station_parameters_coefficients loop).
+filtered_data_boot_split <- split(filtered_data, filtered_data$station)
+
+# Build the prediction grid once outside all loops
+newdata_grid <- data.frame(doy = doy_grid)
+
+n_cores        <- max(1L, parallel::detectCores() - 1L)
 all_boot_results <- list()
 
 for (pc in all_prob_cols) {
   if (!pc %in% colnames(filtered_data)) next
 
+  # Only n_presence is needed for the filter — n_total and n_unique_doy were
+  # computed here but never used downstream, so drop them.
   stations_sub_g <- filtered_data %>%
     group_by(station) %>%
     drop_na(!!sym(pc)) %>%
-    dplyr::reframe(
-      n_total      = n(),
-      n_presence   = sum(.data[[pc]] == 1L, na.rm = TRUE),
-      n_unique_doy = n_distinct(doy)
-    ) %>%
+    dplyr::reframe(n_presence = sum(.data[[pc]] == 1L, na.rm = TRUE)) %>%
     filter(n_presence >= 10)
 
   if (nrow(stations_sub_g) == 0) next
 
-  boot_results_g <- list()
+  # Build the GAM formula once per pc — it is identical for all 1000 iterations
+  # of every station, so there is no reason to re-parse it inside replicate().
+  gam_formula <- as.formula(paste0(pc, " ~ s(doy, bs = 'cp')"))
 
-  for (s in unique(stations_sub_g$station)) {
-    dat_station <- filtered_data %>%
-      filter(station == s) %>%
-      drop_na(!!sym(pc))
+  # Parallelise over stations; each station's 1000 GAM fits are independent.
+  boot_results_g <- parallel::mclapply(
+    unique(stations_sub_g$station),
+    function(s) {
+      dat_station      <- filtered_data_boot_split[[s]]
+      dat_station      <- dat_station[!is.na(dat_station[[pc]]), ]
+      dat_station$doy  <- as.numeric(dat_station$doy)   # convert once, not 1000×
 
-    boot_summary <- replicate(n_boot, {
-      dat_boot <- dat_station %>%
-        group_by(!!sym(pc)) %>%
-        group_modify(~ slice_sample(.x, n = nrow(.x), replace = TRUE)) %>%
-        ungroup() %>%
-        mutate(station = as.factor(as.character(station)), doy = as.numeric(doy))
+      # Pre-compute group row indices once for stratified resampling
+      abs_idx  <- which(dat_station[[pc]] == 0L)
+      pres_idx <- which(dat_station[[pc]] == 1L)
 
-      fit <- tryCatch(
-        mgcv::gam(as.formula(paste0(pc, " ~ s(doy, bs = 'cp')")),
-                  data = dat_boot, family = binomial,
-                  knots = list(doy = c(0, 365))),
-        error = function(e) return(NULL)
-      )
-      if (is.null(fit)) return(rep(NA, 3))
+      boot_summary <- replicate(n_boot, {
+        # Base-R stratified sampling — ~10× faster than group_modify(slice_sample)
+        boot_idx <- c(sample(abs_idx,  length(abs_idx),  replace = TRUE),
+                      sample(pres_idx, length(pres_idx), replace = TRUE))
+        dat_boot <- dat_station[boot_idx, , drop = FALSE]
+        # Note: station-as-factor conversion removed — station is not in the
+        # GAM formula (pc ~ s(doy, ...)) so that mutate() was a no-op.
 
-      pred  <- predict(fit, newdata = data.frame(doy = doy_grid), type = "response")
-      t1    <- doy_grid[which(pred >= threshold)[1]]
-      t2    <- doy_grid[rev(which(pred >= threshold))[1]]
-      p_max <- doy_grid[which.max(pred)]
-      c(t1, t2, p_max)
-    }, simplify = "matrix")
+        fit <- tryCatch(
+          mgcv::gam(gam_formula, data = dat_boot, family = binomial,
+                    knots = list(doy = c(0, 365))),
+          error = function(e) NULL
+        )
+        if (is.null(fit)) return(rep(NA_real_, 3))
 
-    df_s <- as.data.frame(t(boot_summary))
-    colnames(df_s) <- c("t1", "t2", "p_max")
-    df_s$station   <- s
-    df_s$prob_col  <- pc
-    boot_results_g[[s]] <- df_s
-  }
+        pred <- predict(fit, newdata = newdata_grid, type = "response")
+        # Call which() once, index both ends — avoids rev() copy for t2
+        w    <- which(pred >= threshold)
+        c(doy_grid[w[1L]], doy_grid[w[length(w)]], doy_grid[which.max(pred)])
+      }, simplify = "matrix")
+
+      df_s           <- as.data.frame(t(boot_summary))
+      colnames(df_s) <- c("t1", "t2", "p_max")
+      df_s$station   <- s
+      df_s$prob_col  <- pc
+      df_s
+    },
+    mc.cores = n_cores
+  )
 
   all_boot_results[[pc]] <- bind_rows(boot_results_g)
 }
