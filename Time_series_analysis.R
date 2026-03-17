@@ -2120,6 +2120,13 @@ for (pc in unique(Coef_stations$species)) {
     else
       scales::label_number(accuracy = 0.1)
 
+    # Compute pretty y-axis range covering all points and error bars
+    y_vals <- c(param_data$relative_deviation, param_data$lower_ci, param_data$upper_ci)
+    y_vals <- y_vals[is.finite(y_vals)]
+    if (length(y_vals) == 0) y_vals <- c(-1, 0, 1)   # fallback if all values are NA/Inf
+    y_breaks <- pretty(y_vals, n = 5)
+    y_limits <- range(y_breaks)
+
     plot_dev <- ggplot(param_data, aes(x = station_number, y = relative_deviation)) +
       geom_point(aes(color = sig_color), size = 1.5) +
       geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci, color = sig_color), width = 0) +
@@ -2138,7 +2145,8 @@ for (pc in unique(Coef_stations$species)) {
             axis.title.y       = element_markdown(size = 12),
             axis.ticks.length.x = unit(0.35, "cm")) +
       scale_x_discrete(guide = guide_axis(n.dodge = 2, minor.ticks = TRUE)) +
-      scale_y_continuous(expand = c(0, 0), labels = y_label_function)
+      scale_y_continuous(breaks = y_breaks, limits = y_limits,
+                         expand = c(0, 0), labels = y_label_function)
 
     plot_list_dev[[param]] <- plot_dev
 
