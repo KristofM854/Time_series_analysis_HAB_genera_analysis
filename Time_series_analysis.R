@@ -219,7 +219,7 @@ norway_combined <- norway_combined %>%
 # Step 1: Aggregate genus-level probabilities, cell concentrations and categorical fields per date/station
 norway_combined_probs <- norway_combined %>%
   group_by(date, station) %>%
-  summarise(
+  dplyr::summarise(
     # Overall: 1 if any row is present, 0 if all absent, NA if all missing
     probability = case_when(
       any(probability == 1L, na.rm = TRUE) ~ 1L,
@@ -228,11 +228,12 @@ norway_combined_probs <- norway_combined %>%
     ),
     # Individual genus probabilities (1/0/NA) — one across() replaces 11 repeated case_when blocks
     across(
-      all_of(sapply(genera_of_interest, prob_col_name)),
+      all_of(unname(sapply(genera_of_interest, prob_col_name))),
       ~ case_when(any(. == 1L, na.rm = TRUE) ~ 1L,
                   all(is.na(.))              ~ NA_integer_,
                   TRUE                       ~ 0L)
     ),
+    
     # Genus-level cell concentration totals per date/station
     cells_L_Alexandrium       = sum(cells_L[genus == "Alexandrium"],       na.rm = TRUE),
     cells_L_Dinophysis        = sum(cells_L[genus == "Dinophysis"],        na.rm = TRUE),
@@ -300,9 +301,20 @@ denmark_ctd <-
   col_types = cols(.default = "c")
  )
 
-denmark_ctd <- denmark_ctd %>% 
- mutate(date = as.Date(date, format = "%d. %b %y")) %>% 
- mutate(day = day(date))
+month_map <- c(
+  "Mai" = "May",
+  "Mrz" = "Mar",
+  "Dez" = "Dec",
+  "Okt" = "Oct"
+)
+
+normalize_months <- function(x) {
+  stringr::str_replace_all(x, month_map)
+}
+
+denmark_ctd <- denmark_ctd  %>% 
+  mutate(date = date %>% normalize_months() %>% as.Date(format = "%d. %b %y")) %>%
+  mutate(day = day(date))
 
 # Chemical and physical water properties
 denmark_waterquality <-
@@ -315,8 +327,8 @@ denmark_waterquality <-
 
 denmark_waterquality <-
  denmark_waterquality %>% 
- mutate(date = as.Date(date, format = "%d. %b %y")) %>% 
- mutate(day = day(date))
+  mutate(date = date %>% normalize_months() %>% as.Date(format = "%d. %b %y")) %>%
+  mutate(day = day(date))
 
 # Secci depth and Kd values
 denmark_secci_kd <-
@@ -329,8 +341,8 @@ denmark_secci_kd <-
 
 denmark_secci_kd <-
  denmark_secci_kd %>% 
- mutate(date = as.Date(date, format = "%d. %b %y")) %>% 
- mutate(day = day(date))
+  mutate(date = date %>% normalize_months() %>% as.Date(format = "%d. %b %y")) %>%
+  mutate(day = day(date))
 
 # remove the -000X from the Limfjord stations as it does not match the synthax of denmark_counts
 denmark_secci_kd   <- remove_station_suffix(denmark_secci_kd)
@@ -418,7 +430,7 @@ denmark_ctd <- denmark_ctd %>%
   dplyr::summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop")
 
 denmark_waterquality <- denmark_waterquality %>%
-  mutate(across(everything(), as.numeric)) %>%
+  mutate(across(!c(station, date), as.numeric)) %>%
   group_by(station, date, lat, lon) %>%
   dplyr::summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop")
 
@@ -837,7 +849,7 @@ for(each_station in all_stations_sweden){
       station = coalesce(station.x, station.y),
       date = coalesce(date.x, date.y)
     ) %>%
-    select(-matches("\\.(x|y)$"))
+    dplyr::select(-matches("\\.(x|y)$"))
   
   sweden_list[[each_station]] <- sweden_combined
 }
@@ -1064,26 +1076,26 @@ write.table(germany_combined,
       row.names = FALSE)
 
 ####### MERGING OF ALL MONITORING PROGRAMS ####### 
-germany_combined = read_delim(
- paste0(script_dir, "/", "germany_combined.txt"),
- delim = "\t",
- col_names = T
-)
-sweden_combined = read_delim(
- paste0(script_dir, "/", "sweden_combined.txt"),
- delim = "\t",
- col_names = T
-)
-norway_combined = read_delim(
- paste0(script_dir, "/", "norway_combined.txt"),
- delim = "\t",
- col_names = T
-)
-denmark_combined = read_delim(
- paste0(script_dir, "/", "denmark_combined.txt"),
- delim = "\t",
- col_names = T
-)
+# germany_combined = read_delim(
+#  paste0(script_dir, "/", "germany_combined.txt"),
+#  delim = "\t",
+#  col_names = T
+# )
+# sweden_combined = read_delim(
+#  paste0(script_dir, "/", "sweden_combined.txt"),
+#  delim = "\t",
+#  col_names = T
+# )
+# norway_combined = read_delim(
+#  paste0(script_dir, "/", "norway_combined.txt"),
+#  delim = "\t",
+#  col_names = T
+# )
+# denmark_combined = read_delim(
+#  paste0(script_dir, "/", "denmark_combined.txt"),
+#  delim = "\t",
+#  col_names = T
+# )
 
 # Convert data frames to data tables
 setDT(denmark_combined)
@@ -1141,7 +1153,7 @@ all_data <- all_data %>% mutate(limiting_conditions = as.factor(
 # Step 1: Aggregate genus-level probabilities, cell concentrations and categorical fields per combined_station/date
 all_data_probs <- all_data %>%
   group_by(combined_station, date) %>%
-  summarise(
+  dplyr::summarise(
     # Overall: 1 if any row is present, 0 if all absent, NA if all missing
     probability = case_when(
       any(probability == 1L, na.rm = TRUE) ~ 1L,
@@ -1150,7 +1162,7 @@ all_data_probs <- all_data %>%
     ),
     # Individual genus probabilities (1/0/NA) — one across() replaces 11 repeated case_when blocks
     across(
-      all_of(sapply(genera_of_interest, prob_col_name)),
+      all_of(unname(sapply(genera_of_interest, prob_col_name))),
       ~ case_when(any(. == 1L, na.rm = TRUE) ~ 1L,
                   all(is.na(.))              ~ NA_integer_,
                   TRUE                       ~ 0L)
@@ -1534,7 +1546,7 @@ stations_yearly_probability <-
   geom_spatial_point(
     data = unique_stations
     %>% filter(station %in% manuscript_stations),
-    aes(x = lon, y = lat, col = probability),
+    aes(x = lon, y = lat, col = factor(probability)),
     size = 1.5
   ) +
   labs(title = "Yearly analysed stations", x = "Longitude (°E)", y = "Latitude (°N)") +
@@ -1605,7 +1617,6 @@ dir.create(file.path(script_dir, "maps"), showWarnings = FALSE, recursive = TRUE
 walk(genera_of_interest, function(genus) {
   cell_col <- cells_col_name(genus)
   if (!cell_col %in% colnames(filtered_data)) return(invisible(NULL))
-
   genus_dens <- filtered_data %>%
     filter(.data[[cell_col]] > 0) %>%
     drop_na(year2) %>%
@@ -1616,19 +1627,37 @@ walk(genera_of_interest, function(genus) {
       .groups = "drop"
     ) %>%
     full_join(unique_stations %>% dplyr::select(station, station_number), by = "station") %>%
-    mutate(log_cells_L = log(cells_L))
-
+    mutate(log_cells_L = log(cells_L)) %>%
+    drop_na(year2)
   if (nrow(genus_dens) == 0) return(invisible(NULL))
-
-  # Determine whether this is the last genus (to show axes) or not
+  # ── Per-genus scale ranges ───────────────────────────────────────────────
+  log_min <- min(genus_dens$log_cells_L, na.rm = TRUE)
+  log_max <- max(genus_dens$log_cells_L, na.rm = TRUE)
+  n_max   <- max(genus_dens$n, na.rm = TRUE)
+  
+  # Clean size breaks: pretty() generates human-readable values without duplicates
+  genus_size_breaks <- unique(pretty(c(0, n_max), n = 4))
+  if (length(genus_size_breaks) < 3) {
+    genus_size_breaks <- seq(0, n_max, length.out = 5)
+  }
+  
+  # Clean colour breaks: 5 evenly spaced points on log scale, rounded labels
+  raw_breaks       <- exp(seq(log_min, log_max, length.out = 5))
+  genus_log_breaks <- log(raw_breaks)
+  genus_log_labels <- sapply(raw_breaks, function(x) {
+    if (x >= 1e6)      paste0(round(x / 1e6), "M")
+    else if (x >= 1e3) paste0(round(x / 1e3), "k")
+    else               as.character(round(x))
+  })
+  # ────────────────────────────────────────────────────────────────────────
   is_last <- genus == tail(genera_of_interest, 1)
 
   plot2 <- basemap(
-    data     = coordinates_dens,
+    data       = coordinates_dens,
     bathymetry = FALSE,
-    legends  = FALSE,
-    land.col = "grey75",
-    rotate   = TRUE
+    legends    = FALSE,
+    land.col   = "grey75",
+    rotate     = TRUE
   ) +
     ggspatial::geom_spatial_point(
       data = genus_dens,
@@ -1637,16 +1666,16 @@ walk(genera_of_interest, function(genus) {
     facet_grid(. ~ year2) +
     scale_color_gradientn(
       colors = viridisLite::plasma(200),
-      limits = log(c(1, 10^5)),
-      breaks = log_breaks,
-      labels = custom_labels,
+      limits = c(log_min, log_max),
+      breaks = genus_log_breaks,
+      labels = genus_log_labels,
       name   = stringr::str_wrap("Cell density <br> (cells L<sup>-1</sup>)", width = 2)
     ) +
     scale_size_area(
-      limits   = c(0, 65),
-      breaks   = custom_breaks,
+      limits   = c(0, max(genus_size_breaks)),
+      breaks   = genus_size_breaks,
       max_size = 6,
-      labels   = custom_sizes,
+      labels   = as.character(genus_size_breaks),
       name     = stringr::str_wrap("Number of <br> present <br> observations", width = 2)
     ) +
     labs(
@@ -1670,17 +1699,24 @@ walk(genera_of_interest, function(genus) {
       axis.text.y       = if (is_last) element_markdown(size = 10) else element_blank(),
       axis.title.y      = element_markdown(size = 10)
     ) +
-    scale_x_continuous(breaks = c(8, 12, 16, 20), labels = c("8", "12", "16", "20"), expand = c(0, 0)) +
-    scale_y_continuous(breaks = c(54, 56, 58, 60), labels = c("54", "56", "58", "60"), expand = c(0, 0)) +
+    scale_x_continuous(
+      breaks = c(8, 12, 16, 20),
+      labels = c("8", "12", "16", "20"),
+      expand = c(0, 0)
+    ) +
+    scale_y_continuous(
+      breaks = c(54, 56, 58, 60),
+      labels = c("54", "56", "58", "60"),
+      expand = c(0, 0)
+    ) +
     guides(color = guide_colorbar(order = 1), size = guide_legend(order = 2))
-
   ggsave(
     filename = paste0(genus, "_cell_densities.png"),
     plot     = plot2,
     path     = file.path(script_dir, "maps"),
     dpi      = 300,
     width    = 10,
-    height   = 2.5,
+    height   = 5,
     units    = "in"
   )
 })
@@ -1807,8 +1843,7 @@ filtered_data_split <- split(filtered_data, filtered_data$station)
 years_split         <- split(years_since_first_observation,
                              years_since_first_observation$station)
 
-n_cores <- max(1L, parallel::detectCores() - 1L)
-message(sprintf("Bootstrap analysis: %d stations across %d cores", total_stations, n_cores))
+n_cores <- 1
 
 station_parameters_coefficients <- parallel::mclapply(
   stations,
@@ -1845,25 +1880,57 @@ station_parameters_coefficients <- parallel::mclapply(
 # Combine the results into data frames and change the format
 Coef_stations <- do.call(rbind, lapply(station_parameters_coefficients, function(station_results) {
   if (is.null(station_results)) return(NULL)
-  do.call(rbind, lapply(station_results, function(probability_results) {
-    if (is.null(probability_results)) return(NULL)
-    do.call(rbind, lapply(probability_results, function(parameter_result) {
-      if (is.null(parameter_result)) return(NULL)
-      return(parameter_result$coefficients)
+  
+  # Extract results for each probability column
+  do.call(rbind, lapply(names(station_results), function(prob_col_name) {
+    prob_col_results <- station_results[[prob_col_name]]
+    if (is.null(prob_col_results)) return(NULL)
+    
+    # Each prob_col_results is an unnamed list with 6 elements (one per parameter)
+    # Extract results for each parameter position
+    do.call(rbind, lapply(seq_along(prob_col_results), function(param_idx) {
+      param_result <- prob_col_results[[param_idx]]
+      if (is.null(param_result) || is.null(param_result$coefficients)) return(NULL)
+      
+      coef_df <- param_result$coefficients
+      
+      # Add probability column identifier
+      coef_df$probability_column <- prob_col_name
+      
+      return(coef_df)
     }))
   }))
 }))
 
+# Clean up row names
+rownames(Coef_stations) <- NULL
+
 Bootstrap_distributions <- do.call(rbind, lapply(station_parameters_coefficients, function(station_results) {
   if (is.null(station_results)) return(NULL)
-  do.call(rbind, lapply(station_results, function(probability_results) {
-    if (is.null(probability_results)) return(NULL)
-    do.call(rbind, lapply(probability_results, function(parameter_result) {
-      if (is.null(parameter_result)) return(NULL)
-      return(parameter_result$bootstrap_distribution)
+  
+  # Extract results for each probability column
+  do.call(rbind, lapply(names(station_results), function(prob_col_name) {
+    prob_col_results <- station_results[[prob_col_name]]
+    if (is.null(prob_col_results)) return(NULL)
+    
+    # Each prob_col_results is an unnamed list with 6 elements (one per parameter)
+    # Extract results for each parameter position
+    do.call(rbind, lapply(seq_along(prob_col_results), function(param_idx) {
+      param_result <- prob_col_results[[param_idx]]
+      if (is.null(param_result) || is.null(param_result$bootstrap_distribution)) return(NULL)
+      
+      bootstrap_df <- param_result$bootstrap_distribution
+      
+      # Add probability column identifier
+      bootstrap_df$probability_column <- prob_col_name
+      
+      return(bootstrap_df)
     }))
   }))
 }))
+
+# Clean up row names
+rownames(Bootstrap_distributions) <- NULL
 
 # Introduce confidence intervals for monthly/yearly probability distributions with 1/0 as upper and lower limit, respectively
 filtered_dataframes <- grep("^probparm_", ls(), value = TRUE) %>%
@@ -2061,72 +2128,68 @@ for (pc in unique(Coef_stations$species)) {
                 else paste0("fig6_", genus_tag, ".png")
     ggsave(fig_name, all_plots_dev,
            path = file.path(script_dir, "figures"),
-           dpi = 300, width = 6, height = 5, units = "in")
+           dpi = 300, width = 8, height = 6.5, units = "in")
   }
 }
 
 # Bootstrap GAM seasonal timing analysis – loop over all probability columns
 # n_boot iterations per station per genus; results stored in all_boot_results list
-n_boot    <- 10000
+n_boot    <- 10
 threshold <- 0.1
 doy_grid  <- seq(0, 365, length.out = 366)
-
 set.seed(123)
 
 # Pre-split by station once — avoids repeated filter() against the full dataset
-# inside each worker (same pattern as the station_parameters_coefficients loop).
 filtered_data_boot_split <- split(filtered_data, filtered_data$station)
 
 # Build the prediction grid once outside all loops
 newdata_grid <- data.frame(doy = doy_grid)
 
-n_cores        <- max(1L, parallel::detectCores() - 1L)
 all_boot_results <- list()
 
 for (pc in all_prob_cols) {
+  print(pc)
   if (!pc %in% colnames(filtered_data)) next
-
-  # Only n_presence is needed for the filter — n_total and n_unique_doy were
-  # computed here but never used downstream, so drop them.
+  
   stations_sub_g <- filtered_data %>%
     group_by(station) %>%
     drop_na(!!sym(pc)) %>%
     dplyr::reframe(n_presence = sum(.data[[pc]] == 1L, na.rm = TRUE)) %>%
     filter(n_presence >= 10)
-
+  
   if (nrow(stations_sub_g) == 0) next
-
-  # Build the GAM formula once per pc — it is identical for all 1000 iterations
-  # of every station, so there is no reason to re-parse it inside replicate().
+  
+  # Build the GAM formula once per pc — constant across all stations/iterations
   gam_formula <- as.formula(paste0(pc, " ~ s(doy, bs = 'cp')"))
-
+  
   boot_results_g <- list()
-
+  
   for (s in unique(stations_sub_g$station)) {
     dat_station     <- filtered_data_boot_split[[s]]
     dat_station     <- dat_station[!is.na(dat_station[[pc]]), ]
-    dat_station$doy <- as.numeric(dat_station$doy)
-
+    dat_station$doy <- as.numeric(dat_station$doy)   # convert once, not n_boot×
+    
     abs_idx  <- which(dat_station[[pc]] == 0L)
     pres_idx <- which(dat_station[[pc]] == 1L)
-
+    
     boot_summary <- replicate(n_boot, {
       boot_idx <- c(sample(abs_idx,  length(abs_idx),  replace = TRUE),
                     sample(pres_idx, length(pres_idx), replace = TRUE))
       dat_boot <- dat_station[boot_idx, , drop = FALSE]
-
+      
       fit <- tryCatch(
         mgcv::gam(gam_formula, data = dat_boot, family = binomial,
                   knots = list(doy = c(0, 365))),
         error = function(e) NULL
       )
       if (is.null(fit)) return(rep(NA_real_, 3))
-
+      
       pred <- predict(fit, newdata = newdata_grid, type = "response")
       w    <- which(pred >= threshold)
+      if (length(w) == 0) return(rep(NA_real_, 3))
       c(doy_grid[w[1L]], doy_grid[w[length(w)]], doy_grid[which.max(pred)])
     }, simplify = TRUE)
-
+    
     # Guard against replicate() returning a list instead of a matrix
     # (happens when some iterations fail to produce a plain numeric vector)
     if (is.matrix(boot_summary)) {
@@ -2141,7 +2204,7 @@ for (pc in all_prob_cols) {
     df_s$prob_col <- pc
     boot_results_g[[s]] <- df_s
   }
-
+  
   all_boot_results[[pc]] <- bind_rows(boot_results_g)
 }
 
