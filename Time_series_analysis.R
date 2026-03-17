@@ -2052,9 +2052,10 @@ percent_parameters <- c("NO3", "PO4", "silicate", "N_P")
 # Environmental deviation plots – loop over all probability columns (overall + per genus)
 for (pc in unique(Coef_stations$species)) {
   genus_tag   <- sub("^probability_?", "", pc)
-  genus_label <- if (genus_tag == "" || pc == "probability") "any harmful algae"
+  genus_label <- if (genus_tag == "" || pc == "probability") "harmful algae"
                  else genus_display_names[[genus_tag]]
-  y_lab_dev   <- paste0("Deviation when <i>", genus_label, "</i> is present")
+  # Genera already carry markdown italics (*...*) from genus_display_names; overall is plain text.
+  y_lab_dev   <- paste0("Deviation when ", genus_label, " is present")
 
   # Per-genus output directory
   genus_plot_dir <- if (pc == "probability") base_plot_dir
@@ -2543,6 +2544,12 @@ pal_labs  <- setNames(
   all_prob_cols_present
 )
 
+# Shared y-axis limits across all water-body panels for a consistent scale
+.wb_y_max  <- max(c(result_all$upr, result_all$data), na.rm = TRUE)
+.wb_y_max  <- if (is.finite(.wb_y_max)) .wb_y_max else 0.5
+.wb_breaks <- pretty(c(0, .wb_y_max), n = 5)
+.wb_y_lim  <- c(min(.wb_breaks), max(.wb_breaks))
+
 all_plots_monthly <- list()
 
 for (wb in levels(result_all$water_body)) {
@@ -2572,9 +2579,8 @@ for (wb in levels(result_all$water_body)) {
     ) +
     scale_x_discrete(breaks = 1:12, labels = month.abb[1:12],
                      limits = factor(1:12), expand = c(0.01, 0.01)) +
-    scale_y_continuous(breaks = seq(0, 0.5, 0.1), labels = seq(0, 0.5, 0.1),
-                       expand = c(0, 0)) +
-    coord_cartesian(ylim = c(0, 0.5)) +
+    scale_y_continuous(breaks = .wb_breaks, labels = .wb_breaks,
+                       limits = .wb_y_lim, expand = c(0, 0)) +
     scale_color_manual(values = pal_cols, labels = pal_labs) +
     scale_fill_manual( values = pal_cols, labels = pal_labs,
                        guide  = guide_legend(nrow = 2, keyheight = unit(0.2, "cm"), keywidth = unit(0.2, "cm")))
@@ -2648,7 +2654,7 @@ for (pc in all_prob_cols) {
   genus_tag   <- sub("^probability_?", "", pc)
   genus_label <- if (genus_tag == "") "overall" else genus_tag
   display     <- if (genus_tag == "" || !genus_tag %in% names(genus_display_names)) {
-    "any harmful algae"
+    "harmful algae"
   } else {
     genus_display_names[[genus_tag]]
   }
@@ -2687,6 +2693,13 @@ for (pc in all_prob_cols) {
   temp_range$lower       <- temp_range$probability - 1.96 * temp_range$se
   temp_range$upper       <- temp_range$probability + 1.96 * temp_range$se
 
+  # Data-driven y-axis for temperature GAM
+  .y_vals_t <- c(temp_range$lower, temp_range$upper, temp_range$probability)
+  .y_vals_t <- .y_vals_t[is.finite(.y_vals_t) & .y_vals_t >= 0]
+  .y_max_t  <- if (length(.y_vals_t) > 0) max(.y_vals_t) else 0.5
+  .y_brks_t <- pretty(c(0, .y_max_t), n = 5)
+  .y_lim_t  <- c(min(.y_brks_t) - 0.01, max(.y_brks_t))
+
   agg_temp <- filtered_data_temp %>%
     filter(temp >= 10 & temp < 21.5 & year >= 2008 & month <= 10 & month >= 5) %>%
     mutate(temp = round(temp, digits = 0),
@@ -2716,7 +2729,7 @@ for (pc in all_prob_cols) {
       legend.position  = "top"
     ) +
     scale_x_continuous(breaks = seq(6, 32, by = 2), expand = c(0.01, 0.01)) +
-    scale_y_continuous(limits = c(-0.01, 0.35), breaks = seq(0, 0.35, 0.05),
+    scale_y_continuous(limits = .y_lim_t, breaks = .y_brks_t[.y_brks_t >= 0],
                        expand = c(0.01, 0.01))
 
   ggsave(filename = paste0("temp_", genus_label, ".png"),
@@ -2752,6 +2765,13 @@ for (pc in all_prob_cols) {
     sal_range$lower       <- sal_range$probability - 1.96 * sal_range$se
     sal_range$upper       <- sal_range$probability + 1.96 * sal_range$se
 
+    # Data-driven y-axis for salinity GAM
+    .y_vals_s <- c(sal_range$lower, sal_range$upper, sal_range$probability)
+    .y_vals_s <- .y_vals_s[is.finite(.y_vals_s) & .y_vals_s >= 0]
+    .y_max_s  <- if (length(.y_vals_s) > 0) max(.y_vals_s) else 0.5
+    .y_brks_s <- pretty(c(0, .y_max_s), n = 5)
+    .y_lim_s  <- c(min(.y_brks_s) - 0.01, max(.y_brks_s))
+
     agg_sal <- filtered_data_sal %>%
       filter(sal <= 32 & sal >= 5 & year >= 2008 & month <= 10 & month >= 5) %>%
       mutate(sal = round(sal, digits = 0),
@@ -2781,7 +2801,7 @@ for (pc in all_prob_cols) {
         legend.position  = "top"
       ) +
       scale_x_continuous(breaks = seq(6, 32, by = 2), expand = c(0.01, 0.01)) +
-      scale_y_continuous(limits = c(-0.01, 0.35), breaks = seq(0, 0.35, 0.05),
+      scale_y_continuous(limits = .y_lim_s, breaks = .y_brks_s[.y_brks_s >= 0],
                          expand = c(0.01, 0.01))
 
     ggsave(filename = paste0("sal_", genus_label, ".png"),
