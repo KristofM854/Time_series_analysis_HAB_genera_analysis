@@ -2164,7 +2164,7 @@ for (pc in unique(Coef_stations$species)) {
                 else paste0("fig6_", genus_tag, ".png")
     ggsave(fig_name, all_plots_dev,
            path = file.path(script_dir, "figures"),
-           dpi = 300, width = 6, height = 5, units = "in")
+           dpi = 300, width = 8, height = 6.5, units = "in")
   }
 }
 
@@ -2176,31 +2176,17 @@ doy_grid  <- seq(0, 365, length.out = 366)
 set.seed(123)
 
 # Pre-split by station once — avoids repeated filter() against the full dataset
-<<<<<<< HEAD
-=======
-# inside each worker (same pattern as the station_parameters_coefficients loop).
->>>>>>> 0ede2c8d4d9810dc95750673a0c2050883f3e2da
 filtered_data_boot_split <- split(filtered_data, filtered_data$station)
 
 # Build the prediction grid once outside all loops
 newdata_grid <- data.frame(doy = doy_grid)
 
-<<<<<<< HEAD
-=======
-n_cores        <- max(1L, parallel::detectCores() - 1L)
->>>>>>> 0ede2c8d4d9810dc95750673a0c2050883f3e2da
 all_boot_results <- list()
 
 for (pc in all_prob_cols) {
   print(pc)
   if (!pc %in% colnames(filtered_data)) next
-<<<<<<< HEAD
   
-=======
-
-  # Only n_presence is needed for the filter — n_total and n_unique_doy were
-  # computed here but never used downstream, so drop them.
->>>>>>> 0ede2c8d4d9810dc95750673a0c2050883f3e2da
   stations_sub_g <- filtered_data %>%
     group_by(station) %>%
     drop_na(!!sym(pc)) %>%
@@ -2208,89 +2194,38 @@ for (pc in all_prob_cols) {
     filter(n_presence >= 10)
   
   if (nrow(stations_sub_g) == 0) next
-<<<<<<< HEAD
   
   # Build the GAM formula once per pc — constant across all stations/iterations
   gam_formula <- as.formula(paste0(pc, " ~ s(doy, bs = 'cp')"))
   
-=======
-
-  # Build the GAM formula once per pc — it is identical for all 1000 iterations
-  # of every station, so there is no reason to re-parse it inside replicate().
-  gam_formula <- as.formula(paste0(pc, " ~ s(doy, bs = 'cp')"))
-
->>>>>>> 0ede2c8d4d9810dc95750673a0c2050883f3e2da
   boot_results_g <- list()
   
   for (s in unique(stations_sub_g$station)) {
-<<<<<<< HEAD
-    print(s)
     dat_station     <- filtered_data_boot_split[[s]]
     dat_station     <- dat_station[!is.na(dat_station[[pc]]), ]
     dat_station$doy <- as.numeric(dat_station$doy)   # convert once, not n_boot×
     
-    # Pre-compute group row indices once for stratified resampling
     abs_idx  <- which(dat_station[[pc]] == 0L)
     pres_idx <- which(dat_station[[pc]] == 1L)
     
     boot_summary <- replicate(n_boot, {
-      # Base-R stratified sampling — ~10× faster than group_modify(slice_sample)
       boot_idx <- c(sample(abs_idx,  length(abs_idx),  replace = TRUE),
                     sample(pres_idx, length(pres_idx), replace = TRUE))
       dat_boot <- dat_station[boot_idx, , drop = FALSE]
       
-=======
-    dat_station     <- filtered_data_boot_split[[s]]
-    dat_station     <- dat_station[!is.na(dat_station[[pc]]), ]
-    dat_station$doy <- as.numeric(dat_station$doy)
-
-    abs_idx  <- which(dat_station[[pc]] == 0L)
-    pres_idx <- which(dat_station[[pc]] == 1L)
-
-    boot_summary <- replicate(n_boot, {
-      boot_idx <- c(sample(abs_idx,  length(abs_idx),  replace = TRUE),
-                    sample(pres_idx, length(pres_idx), replace = TRUE))
-      dat_boot <- dat_station[boot_idx, , drop = FALSE]
-
->>>>>>> 0ede2c8d4d9810dc95750673a0c2050883f3e2da
       fit <- tryCatch(
         mgcv::gam(gam_formula, data = dat_boot, family = binomial,
                   knots = list(doy = c(0, 365))),
         error = function(e) NULL
       )
       if (is.null(fit)) return(rep(NA_real_, 3))
-<<<<<<< HEAD
       
       pred <- predict(fit, newdata = newdata_grid, type = "response")
-      # Call which() once, index both ends — avoids rev() copy for t2
       w    <- which(pred >= threshold)
       if (length(w) == 0) return(rep(NA_real_, 3))
       c(doy_grid[w[1L]], doy_grid[w[length(w)]], doy_grid[which.max(pred)])
-      }, simplify = "matrix")
-    
-    df_s           <- as.data.frame(t(boot_summary))
-    colnames(df_s) <- c("t1", "t2", "p_max")
-    df_s$station   <- s
-    df_s$prob_col  <- pc
-    
-    bad_cols <- sapply(df_s, is.list)
-    if (any(bad_cols)) {
-      cat("\n⚠ LIST COLUMN detected!\n")
-      cat("  prob_col:", pc, "\n")
-      cat("  station: ", s, "\n")
-      cat("  bad cols:", paste(names(bad_cols)[bad_cols], collapse = ", "), "\n")
-      cat("  boot_summary preview:\n")
-      print(head(t(boot_summary), 10))
-      stop("Stopping for inspection — fix before continuing.")
-    }
-    
-=======
-
-      pred <- predict(fit, newdata = newdata_grid, type = "response")
-      w    <- which(pred >= threshold)
-      c(doy_grid[w[1L]], doy_grid[w[length(w)]], doy_grid[which.max(pred)])
     }, simplify = TRUE)
-
+    
     # Guard against replicate() returning a list instead of a matrix
     # (happens when some iterations fail to produce a plain numeric vector)
     if (is.matrix(boot_summary)) {
@@ -2303,13 +2238,12 @@ for (pc in all_prob_cols) {
     colnames(df_s) <- c("t1", "t2", "p_max")
     df_s$station  <- s
     df_s$prob_col <- pc
->>>>>>> 0ede2c8d4d9810dc95750673a0c2050883f3e2da
     boot_results_g[[s]] <- df_s
-    
   }
   
   all_boot_results[[pc]] <- bind_rows(boot_results_g)
 }
+
 
 # Use the overall "probability" column results as the primary boot_all (backward compat)
 boot_all <- if ("probability" %in% names(all_boot_results)) all_boot_results[["probability"]] else data.frame()
