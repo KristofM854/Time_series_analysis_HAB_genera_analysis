@@ -984,7 +984,7 @@ process_data <- function(data,
                          parameters_of_interest,
                          each_station,
                          probability_columns,
-                         n_bootstraps = 10000) {
+                         n_bootstraps = 1000) {
   
   parameter_results <- list()
   
@@ -1337,7 +1337,7 @@ make_station_map <- function(coordinates,
     rotate = TRUE
   ) +
     geom_spatial_point(data = unique_stations,
-                       aes(x = lon, y = lat, col = probability),
+                       aes(x = lon, y = lat, col = factor(probability)),
                        size = point_size) +
     labs(title = "Yearly analysed stations", x = "Longitude (°)", y = "Latitude (°)") +
     scale_color_manual(
