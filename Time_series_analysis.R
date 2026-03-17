@@ -1913,25 +1913,57 @@ station_parameters_coefficients <- parallel::mclapply(
 # Combine the results into data frames and change the format
 Coef_stations <- do.call(rbind, lapply(station_parameters_coefficients, function(station_results) {
   if (is.null(station_results)) return(NULL)
-  do.call(rbind, lapply(station_results, function(probability_results) {
-    if (is.null(probability_results)) return(NULL)
-    do.call(rbind, lapply(probability_results, function(parameter_result) {
-      if (is.null(parameter_result)) return(NULL)
-      return(parameter_result$coefficients)
+  
+  # Extract results for each probability column
+  do.call(rbind, lapply(names(station_results), function(prob_col_name) {
+    prob_col_results <- station_results[[prob_col_name]]
+    if (is.null(prob_col_results)) return(NULL)
+    
+    # Each prob_col_results is an unnamed list with 6 elements (one per parameter)
+    # Extract results for each parameter position
+    do.call(rbind, lapply(seq_along(prob_col_results), function(param_idx) {
+      param_result <- prob_col_results[[param_idx]]
+      if (is.null(param_result) || is.null(param_result$coefficients)) return(NULL)
+      
+      coef_df <- param_result$coefficients
+      
+      # Add probability column identifier
+      coef_df$probability_column <- prob_col_name
+      
+      return(coef_df)
     }))
   }))
 }))
 
+# Clean up row names
+rownames(Coef_stations) <- NULL
+
 Bootstrap_distributions <- do.call(rbind, lapply(station_parameters_coefficients, function(station_results) {
   if (is.null(station_results)) return(NULL)
-  do.call(rbind, lapply(station_results, function(probability_results) {
-    if (is.null(probability_results)) return(NULL)
-    do.call(rbind, lapply(probability_results, function(parameter_result) {
-      if (is.null(parameter_result)) return(NULL)
-      return(parameter_result$bootstrap_distribution)
+  
+  # Extract results for each probability column
+  do.call(rbind, lapply(names(station_results), function(prob_col_name) {
+    prob_col_results <- station_results[[prob_col_name]]
+    if (is.null(prob_col_results)) return(NULL)
+    
+    # Each prob_col_results is an unnamed list with 6 elements (one per parameter)
+    # Extract results for each parameter position
+    do.call(rbind, lapply(seq_along(prob_col_results), function(param_idx) {
+      param_result <- prob_col_results[[param_idx]]
+      if (is.null(param_result) || is.null(param_result$bootstrap_distribution)) return(NULL)
+      
+      bootstrap_df <- param_result$bootstrap_distribution
+      
+      # Add probability column identifier
+      bootstrap_df$probability_column <- prob_col_name
+      
+      return(bootstrap_df)
     }))
   }))
 }))
+
+# Clean up row names
+rownames(Bootstrap_distributions) <- NULL
 
 # Introduce confidence intervals for monthly/yearly probability distributions with 1/0 as upper and lower limit, respectively
 filtered_dataframes <- grep("^probparm_", ls(), value = TRUE) %>%
