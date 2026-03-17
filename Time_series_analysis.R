@@ -1739,42 +1739,20 @@ filtered_data <- filtered_data %>%
      strat = as.factor(strat))
 
 # Per-genus stations that have both 0 and 1 observations (required by check_and_fit)
-stations_matching_per_genus <- setNames(
-  lapply(genera_of_interest, function(g) {
-    pc <- prob_col_name(g)
-    if (!pc %in% colnames(filtered_data)) return(character(0))
-    filtered_data %>%
-      group_by(station) %>%
-      dplyr::summarise(
-        has_absent  = any(.data[[pc]] == 0, na.rm = TRUE),
-        has_present = any(.data[[pc]] == 1, na.rm = TRUE),
-        .groups = "drop"
-      ) %>%
-      filter(has_absent & has_present) %>%
-      pull(station)
-  }),
-  genera_of_interest
-)
-
-# Also keep the overall any-harmful-algae station set (backward compat)
-stations_matching_condition <- filtered_data %>%
-  group_by(station) %>%
-  dplyr::summarise(n_prob = n_distinct(probability, na.rm = TRUE), .groups = "drop") %>%
-  filter(n_prob >= 2) %>%
-  pull(station)
-
-# Run check_and_fit for each genus at each qualifying station.
-# Results land in genus-specific result lists (results_list_<Genus>) to avoid collisions.
-# The overall "probability" column is also analysed under results_list_overall.
-
+# Run check_and_fit for ALL probability columns.
+# Qualifying stations are computed per column (stations with both presence and absence).
+# Results stored in results_list_overall (pc="probability") or results_list_<Genus>.
 all_prob_cols <- c("probability", sapply(genera_of_interest, prob_col_name))
 
 for (pc in all_prob_cols) {
-  genus_tag  <- sub("^probability_?", "", pc)   # "" for overall, "Alexandrium" etc. for genera
+  if (!pc %in% colnames(filtered_data)) next
+  genus_tag  <- sub("^probability_?", "", pc)
   rlist_name <- paste0("results_list_", if (genus_tag == "") "overall" else genus_tag)
-  stns_mc    <- if (genus_tag == "") stations_matching_condition
-                else stations_matching_per_genus[[genus_tag]]
-
+  stns_mc <- filtered_data %>%
+    group_by(station) %>%
+    dplyr::summarise(n_prob = n_distinct(.data[[pc]], na.rm = TRUE), .groups = "drop") %>%
+    filter(n_prob >= 2) %>%
+    pull(station)
   if (length(stns_mc) == 0) next
 
   for (each_station in stns_mc) {
@@ -1796,25 +1774,14 @@ for (pc in all_prob_cols) {
   }
 }
 
-# Collect per-genus results into the canonical names used downstream.
-# The "overall" results are assigned to the global names used throughout the analysis.
-overall_rlist <- if (exists("results_list_overall", envir = .GlobalEnv))
-  get("results_list_overall", envir = .GlobalEnv) else list()
-
-for (nm in c("probparm_station_monthly", "probparm_station_yearly",
-             "predicted_probs_station_yearly", "probparm_station_doyly",
-             "probparm_station_doyly_fit")) {
-  if (!is.null(overall_rlist[[nm]]) && nrow(overall_rlist[[nm]]) > 0)
-    assign(nm, overall_rlist[[nm]], envir = .GlobalEnv)
-}
-
-# Collect per-genus results into genus_ts_results list
-genus_ts_results <- setNames(
-  lapply(genera_of_interest, function(g) {
-    rlist_name <- paste0("results_list_", g)
+# Collect results for ALL probability columns into a single named list (keyed by prob_col name)
+all_ts_results <- setNames(
+  lapply(all_prob_cols, function(pc) {
+    genus_tag  <- sub("^probability_?", "", pc)
+    rlist_name <- paste0("results_list_", if (genus_tag == "") "overall" else genus_tag)
     if (exists(rlist_name, envir = .GlobalEnv)) get(rlist_name, envir = .GlobalEnv) else list()
   }),
-  genera_of_interest
+  all_prob_cols
 )
 
 parameters_of_interest <-
@@ -1991,25 +1958,14 @@ compute_doyly_chars <- function(df, pc) {
 # Build doyly_fit_characteristics for ALL probability columns
 all_doyly_fit_chars <- list()
 
-if (exists("probparm_station_doyly_fit") && nrow(probparm_station_doyly_fit) > 0) {
-  all_doyly_fit_chars[["probability"]] <- compute_doyly_chars(probparm_station_doyly_fit, "probability")
-}
-
-for (.genus in genera_of_interest) {
-  .pc     <- prob_col_name(.genus)
-  .rlist  <- genus_ts_results[[.genus]]
+for (.pc in all_prob_cols) {
+  .rlist  <- all_ts_results[[.pc]]
   .fit_df <- if (!is.null(.rlist)) .rlist[["probparm_station_doyly_fit"]] else NULL
   if (!is.null(.fit_df) && nrow(.fit_df) > 0) {
     all_doyly_fit_chars[[.pc]] <- compute_doyly_chars(.fit_df, .pc)
   }
 }
-rm(.genus, .pc, .rlist, .fit_df)
-
-# Backward compat: keep overall as the standalone object used downstream
-probparm_station_doyly_fit_characteristics <-
-  if (!is.null(all_doyly_fit_chars[["probability"]])) {
-    all_doyly_fit_chars[["probability"]]
-  } else data.frame()
+rm(.pc, .rlist, .fit_df)
 
 # Introduce water bodies to the filtered stations
 water_bodies <- c(
@@ -2252,24 +2208,6 @@ for (pc in all_prob_cols) {
   all_boot_results[[pc]] <- bind_rows(boot_results_g)
 }
 
-
-# Use the overall "probability" column results as the primary boot_all (backward compat)
-boot_all <- if ("probability" %in% names(all_boot_results)) all_boot_results[["probability"]] else data.frame()
-
-ci_summary <- boot_all %>%
-  pivot_longer(cols = c("t1", "t2", "p_max")) %>%
-  group_by(station, name) %>%
-  dplyr::summarise(
-    mean  = mean(value, na.rm = TRUE),
-    lower = quantile(value, 0.025, na.rm = TRUE),
-    upper = quantile(value, 0.975, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  pivot_wider(names_from = name, values_from = c(mean, lower, upper))
-
-bootstrap_results <- left_join(boot_all, station_and_waterbody)
-bootstrap_results$iteration <- rep(1:n_boot, times = length(unique(bootstrap_results$station)))
-
 # Bootstrap group differences and Cohen's d — run for ALL probability columns
 for (pc in names(all_boot_results)) {
   if (nrow(all_boot_results[[pc]]) == 0) next
@@ -2376,12 +2314,6 @@ all_doyly_fit_chars_merged <- lapply(all_doyly_fit_chars, function(chars_df) {
     filter(!is.infinite(t1) & !is.na(t1))
 })
 
-# Backward compat: keep overall as the standalone object used downstream
-probparm_station_doyly_fit_characteristics <-
-  if (!is.null(all_doyly_fit_chars_merged[["probability"]])) {
-    all_doyly_fit_chars_merged[["probability"]]
-  } else probparm_station_doyly_fit_characteristics
-
 # Calculate seasonal means – keep probability columns as integer, only convert strat/limiting_conditions
 filtered_data <- filtered_data %>%
   convert_as_factor(strat, limiting_conditions)
@@ -2435,24 +2367,6 @@ for (.pc_fig3 in all_prob_cols_present) {
 }
 rm(.pc_fig3, .genus_arg, .plots_pc)
 
-# Restore sa_plot to the overall probability column for any downstream code
-if ("probability" %in% all_prob_cols_present) {
-  prob_only_overall <- seasonal_means %>%
-    filter(parameter == "probability") %>%
-    dplyr::select(-parameter) %>%
-    dplyr::rename(probability = data)
-  sa_plot <- seasonal_means_env %>%
-    left_join(prob_only_overall, by = c("time", "station")) %>%
-    filter(parameter %in% facet_parameters) %>%
-    mutate(parameter = factor(parameter, levels = facet_parameters)) %>%
-    group_by(parameter, station) %>%
-    dplyr::summarise(
-      data        = mean(data,        na.rm = TRUE),
-      probability = mean(probability, na.rm = TRUE),
-      .groups     = "drop"
-    )
-}
-
 # Statistical analysis and pairwise comparisons of station characteristics, i.e., the days after which
 # the probability of presence exceeds or falls below 10% and the DOY with the maximum probability
 # List of variables to perform operations on
@@ -2481,17 +2395,6 @@ for (.pc_aov in names(all_doyly_fit_chars_merged)) {
       paste0("probparm_station_doyly_fit_characteristics_", .pc_aov, ".docx")))
 }
 rm(.pc_aov, .chars_pc, .perform_aov_pc)
-
-# add station name and latitude to the overall doyly dataframes (backward compat)
-probparm_station_doyly <-
- full_join(probparm_station_doyly,
-      probparm_station_doyly_fit_characteristics %>%
-       dplyr::select(lat, lon, station))
-
-probparm_station_doyly_fit <-
- full_join(probparm_station_doyly_fit,
-      probparm_station_doyly_fit_characteristics %>%
-        dplyr::select(lat, lon, station))
 
 ####### Observation count heatmaps – one panel per genus #######
 # Build a combined data frame: one row per station/year/genus with presence count
@@ -2580,32 +2483,19 @@ ggsave(
 )
 
 ####### PLOT PROBABILITY PATTERNS OVER TIME #######
-# Overall "probability" (any harmful algae) — per-station monthly plots
-for (each_station in unique(probparm_station_monthly$station)) {
- p.subset <-
-  probparm_station_monthly %>%
-  filter(station == each_station)
- filename <- paste0(each_station, "_CI", ".png")
- create_plot(
-  p.subset,
-  NULL,
-  "station",
-  "month",
-  paste0(each_station, " monthly"),
-  paste0(script_dir, "/", "figures", "/", "stations_monthly"),
-  filename
- )
-}
-
-# Per-genus per-station monthly plots
-for (genus in genera_of_interest) {
-  rlist      <- genus_ts_results[[genus]]
+# Per-station monthly plots for ALL probability columns
+for (pc in all_prob_cols) {
+  rlist      <- all_ts_results[[pc]]
   monthly_df <- if (!is.null(rlist)) rlist[["probparm_station_monthly"]] else NULL
   if (is.null(monthly_df) || nrow(monthly_df) == 0) next
 
-  monthly_dir <- file.path(script_dir, "figures", genus, "station_monthly")
+  genus_tag   <- sub("^probability_?", "", pc)
+  monthly_dir <- file.path(script_dir, "figures",
+                            if (genus_tag == "") "probability" else genus_tag,
+                            "station_monthly")
   dir.create(monthly_dir, showWarnings = FALSE, recursive = TRUE)
 
+  genus_arg <- if (genus_tag == "") NULL else genus_tag
   for (each_station in unique(monthly_df$station)) {
     p.subset <- monthly_df %>% filter(station == each_station)
     create_plot(
@@ -2613,7 +2503,7 @@ for (genus in genera_of_interest) {
       paste0(each_station, " monthly"),
       monthly_dir,
       paste0(each_station, "_CI.png"),
-      genus = genus
+      genus = genus_arg
     )
   }
 }
@@ -2709,9 +2599,9 @@ ggsave(
   height   = 8
 )
 
-# Per-genus station probability plots (doyly and yearly) – loop over genera
-for (genus in genera_of_interest) {
-  rlist <- genus_ts_results[[genus]]
+# Per-probability-column station doyly and yearly plots
+for (pc in all_prob_cols) {
+  rlist <- all_ts_results[[pc]]
   if (is.null(rlist) || length(rlist) == 0) next
 
   doyly_df     <- rlist[["probparm_station_doyly"]]
@@ -2719,8 +2609,11 @@ for (genus in genera_of_interest) {
   yearly_df    <- rlist[["probparm_station_yearly"]]
   pred_df      <- rlist[["predicted_probs_station_yearly"]]
 
-  doyly_dir  <- file.path(script_dir, "figures", genus, "station_doyly")
-  yearly_dir <- file.path(script_dir, "figures", genus, "station_yearly")
+  genus_tag  <- sub("^probability_?", "", pc)
+  folder     <- if (genus_tag == "") "probability" else genus_tag
+  genus_arg  <- if (genus_tag == "") NULL else genus_tag
+  doyly_dir  <- file.path(script_dir, "figures", folder, "station_doyly")
+  yearly_dir <- file.path(script_dir, "figures", folder, "station_yearly")
   dir.create(doyly_dir,  showWarnings = FALSE, recursive = TRUE)
   dir.create(yearly_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -2731,7 +2624,7 @@ for (genus in genera_of_interest) {
       p.subset2 <- if (!is.null(doyly_fit_df)) doyly_fit_df %>% filter(station == each_station) else NULL
       create_plot(p.subset, p.subset2, "station", "doy",
                   paste0(each_station, " doyly"), doyly_dir,
-                  paste0(each_station, ".png"), genus = genus)
+                  paste0(each_station, ".png"), genus = genus_arg)
     }
   }
 
@@ -2742,33 +2635,8 @@ for (genus in genera_of_interest) {
       p.subset2 <- if (!is.null(pred_df)) pred_df %>% filter(station == each_station) else NULL
       create_plot(p.subset, p.subset2, "station", "year",
                   each_station, yearly_dir,
-                  paste0(each_station, "_CI.png"), genus = genus)
+                  paste0(each_station, "_CI.png"), genus = genus_arg)
     }
-  }
-}
-
-# Also export overall "any harmful algae" station plots (backward compat)
-if (exists("probparm_station_doyly") && nrow(probparm_station_doyly) > 0) {
-  dir.create(file.path(script_dir, "figures", "station_doyly"), showWarnings = FALSE, recursive = TRUE)
-  for (each_station in unique(probparm_station_doyly$station)) {
-    p.subset  <- probparm_station_doyly %>% filter(station == each_station) %>% mutate(doy = as.numeric(doy))
-    p.subset2 <- probparm_station_doyly_fit %>% filter(station == each_station)
-    create_plot(p.subset, p.subset2, "station", "doy",
-                paste0(each_station, " doyly"),
-                file.path(script_dir, "figures", "station_doyly"),
-                paste0(each_station, ".png"))
-  }
-}
-
-if (exists("probparm_station_yearly") && nrow(probparm_station_yearly) > 0) {
-  dir.create(file.path(script_dir, "figures", "station_yearly"), showWarnings = FALSE, recursive = TRUE)
-  for (each_station in unique(probparm_station_yearly$station)) {
-    p.subset  <- probparm_station_yearly %>% filter(station == each_station) %>% distinct()
-    p.subset2 <- predicted_probs_station_yearly %>% filter(station == each_station)
-    create_plot(p.subset, p.subset2, "station", "year",
-                each_station,
-                file.path(script_dir, "figures", "station_yearly"),
-                paste0(each_station, "_CI.png"))
   }
 }
 
@@ -2932,13 +2800,9 @@ for (pc in all_prob_cols) {
 
 # ── Phase 12: Manuscript figures — per-genus water-body doyly & yearly plots ─
 
-# Use overall results for the methodology illustration figure (Fig 2)
-overall_doyly     <- if (exists("results_list_overall", envir = .GlobalEnv)) {
-  get("results_list_overall", envir = .GlobalEnv)$probparm_station_doyly
-} else NULL
-overall_doyly_fit <- if (exists("results_list_overall", envir = .GlobalEnv)) {
-  get("results_list_overall", envir = .GlobalEnv)$predicted_probs_station_doyly
-} else NULL
+# Use overall "probability" results for the methodology illustration figure (Fig 2)
+overall_doyly     <- all_ts_results[["probability"]][["probparm_station_doyly"]]
+overall_doyly_fit <- all_ts_results[["probability"]][["predicted_probs_station_doyly"]]
 
 if (!is.null(overall_doyly) && nrow(overall_doyly) > 0) {
   overall_doyly     <- left_join(overall_doyly,     station_and_waterbody)
@@ -3070,8 +2934,8 @@ manuscript_station_ids <- c(
   "TF0360", "L9  LAHOLMSBUKTEN"
 )
 
-for (genus in genera_of_interest) {
-  rlist <- genus_ts_results[[genus]]
+for (pc in all_prob_cols) {
+  rlist <- all_ts_results[[pc]]
   if (is.null(rlist) || is.null(rlist$probparm_station_yearly)) next
 
   yearly_df     <- rlist$probparm_station_yearly
@@ -3087,7 +2951,10 @@ for (genus in genera_of_interest) {
   manuscript_stations <- calculate_upr_lwr(manuscript_stations) %>%
     left_join(unique_stations, by = "station")
 
-  prob_dir <- file.path(script_dir, "figures", genus, "probability")
+  genus_tag <- sub("^probability_?", "", pc)
+  folder    <- if (genus_tag == "") "probability" else genus_tag
+  genus_arg <- if (genus_tag == "") NULL else genus_tag
+  prob_dir  <- file.path(script_dir, "figures", folder, "probability")
   dir.create(prob_dir, showWarnings = FALSE, recursive = TRUE)
 
   plots2 <- list()
@@ -3098,7 +2965,7 @@ for (genus in genera_of_interest) {
     } else data.frame()
     station_number <- ms_sub$station_number[1]
     gg <- create_plot2(ms_sub, p2_sub, "station", "year",
-                       station_number, each_station, genus = genus)
+                       station_number, each_station, genus = genus_arg)
     ggsave(paste0(each_station, ".png"), gg, path = prob_dir,
            dpi = 300, width = 5, height = 2.5, units = "cm")
     plots2[[each_station]] <- gg
@@ -3111,13 +2978,13 @@ for (genus in genera_of_interest) {
   if (length(avail) >= 4) {
     Fig_m1 <- get_p("Arendal") + get_p("VIB3708") + get_p("NOR409") + get_p("ARH170006") +
       plot_layout(ncol = 1)
-    ggsave(paste0("Fig_prediction1_", genus, ".png"), Fig_m1, path = prob_dir,
+    ggsave(paste0("Fig_prediction1_", folder, ".png"), Fig_m1, path = prob_dir,
            dpi = 300, width = 2, height = 6, units = "in")
   }
   if (length(avail) >= 8) {
     Fig_m2 <- get_p("SLV Havstensfjorden-Ljungskile") + get_p("ANHOLT E") +
       get_p("L9  LAHOLMSBUKTEN") + get_p("Heiligendamm") + plot_layout(ncol = 1)
-    ggsave(paste0("Fig_prediction2_", genus, ".png"), Fig_m2, path = prob_dir,
+    ggsave(paste0("Fig_prediction2_", folder, ".png"), Fig_m2, path = prob_dir,
            dpi = 300, width = 2, height = 6, units = "in")
   }
 }
@@ -3149,9 +3016,9 @@ for (genus in genera_of_interest) {
 # After fitting GLMs across all genera, collect all p-values and apply FDR
 # correction to control the false discovery rate.
 #
-# Example (collect trend p-values from genus_ts_results):
-#   all_pvals <- lapply(genera_of_interest, function(g) {
-#     rlist <- genus_ts_results[[g]]
+# Example (collect trend p-values from all_ts_results):
+#   all_pvals <- lapply(all_prob_cols, function(pc) {
+#     rlist <- all_ts_results[[pc]]
 #     if (is.null(rlist$result_year)) return(NULL)
 #     rlist$result_year %>%
 #       filter(term == "year") %>%
