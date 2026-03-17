@@ -1904,19 +1904,41 @@ for (i in seq_along(filtered_dataframes)) {
  assign(filtered_dataframes[i], updated_dfs[[i]])
 }
 
-# Create an empty list to store the results
-probparm_station_doyly_fit_characteristics <- list()
+# Helper: compute t1/t2/p_max characteristics from a doyly_fit data frame
+compute_doyly_chars <- function(df, pc) {
+  df %>%
+    group_by(station) %>%
+    dplyr::reframe(
+      t1    = min(doy[data >= 0.1 & !is.na(data)], na.rm = TRUE),
+      t2    = max(doy[data >= 0.1 & !is.na(data)], na.rm = TRUE),
+      p_max = doy[which.max(data[!is.na(data)])]
+    ) %>%
+    dplyr::ungroup() %>%
+    mutate(prob_col = pc)
+}
 
-# Find doys at which the probability exceeds 0.05 and drops below
+# Build doyly_fit_characteristics for ALL probability columns
+all_doyly_fit_chars <- list()
+
+if (exists("probparm_station_doyly_fit") && nrow(probparm_station_doyly_fit) > 0) {
+  all_doyly_fit_chars[["probability"]] <- compute_doyly_chars(probparm_station_doyly_fit, "probability")
+}
+
+for (.genus in genera_of_interest) {
+  .pc     <- prob_col_name(.genus)
+  .rlist  <- genus_ts_results[[.genus]]
+  .fit_df <- if (!is.null(.rlist)) .rlist[["probparm_station_doyly_fit"]] else NULL
+  if (!is.null(.fit_df) && nrow(.fit_df) > 0) {
+    all_doyly_fit_chars[[.pc]] <- compute_doyly_chars(.fit_df, .pc)
+  }
+}
+rm(.genus, .pc, .rlist, .fit_df)
+
+# Backward compat: keep overall as the standalone object used downstream
 probparm_station_doyly_fit_characteristics <-
- probparm_station_doyly_fit %>%
- group_by(station) %>%
- dplyr::reframe(
-  "t1"    = min(doy[data >= 0.1 & !is.na(data)], na.rm = TRUE),
-  "t2"    = max(doy[data >= 0.1 & !is.na(data)], na.rm = TRUE),
-  "p_max" = doy[which.max(data[!is.na(data)])]
- ) %>%
- dplyr::ungroup()
+  if (!is.null(all_doyly_fit_chars[["probability"]])) {
+    all_doyly_fit_chars[["probability"]]
+  } else data.frame()
 
 # Introduce water bodies to the filtered stations
 water_bodies <- c(
@@ -2110,47 +2132,47 @@ for (pc in all_prob_cols) {
   # of every station, so there is no reason to re-parse it inside replicate().
   gam_formula <- as.formula(paste0(pc, " ~ s(doy, bs = 'cp')"))
 
-  # Parallelise over stations; each station's 1000 GAM fits are independent.
-  boot_results_g <- parallel::mclapply(
-    unique(stations_sub_g$station),
-    function(s) {
-      dat_station      <- filtered_data_boot_split[[s]]
-      dat_station      <- dat_station[!is.na(dat_station[[pc]]), ]
-      dat_station$doy  <- as.numeric(dat_station$doy)   # convert once, not 1000×
+  boot_results_g <- list()
 
-      # Pre-compute group row indices once for stratified resampling
-      abs_idx  <- which(dat_station[[pc]] == 0L)
-      pres_idx <- which(dat_station[[pc]] == 1L)
+  for (s in unique(stations_sub_g$station)) {
+    dat_station     <- filtered_data_boot_split[[s]]
+    dat_station     <- dat_station[!is.na(dat_station[[pc]]), ]
+    dat_station$doy <- as.numeric(dat_station$doy)
 
-      boot_summary <- replicate(n_boot, {
-        # Base-R stratified sampling — ~10× faster than group_modify(slice_sample)
-        boot_idx <- c(sample(abs_idx,  length(abs_idx),  replace = TRUE),
-                      sample(pres_idx, length(pres_idx), replace = TRUE))
-        dat_boot <- dat_station[boot_idx, , drop = FALSE]
-        # Note: station-as-factor conversion removed — station is not in the
-        # GAM formula (pc ~ s(doy, ...)) so that mutate() was a no-op.
+    abs_idx  <- which(dat_station[[pc]] == 0L)
+    pres_idx <- which(dat_station[[pc]] == 1L)
 
-        fit <- tryCatch(
-          mgcv::gam(gam_formula, data = dat_boot, family = binomial,
-                    knots = list(doy = c(0, 365))),
-          error = function(e) NULL
-        )
-        if (is.null(fit)) return(rep(NA_real_, 3))
+    boot_summary <- replicate(n_boot, {
+      boot_idx <- c(sample(abs_idx,  length(abs_idx),  replace = TRUE),
+                    sample(pres_idx, length(pres_idx), replace = TRUE))
+      dat_boot <- dat_station[boot_idx, , drop = FALSE]
 
-        pred <- predict(fit, newdata = newdata_grid, type = "response")
-        # Call which() once, index both ends — avoids rev() copy for t2
-        w    <- which(pred >= threshold)
-        c(doy_grid[w[1L]], doy_grid[w[length(w)]], doy_grid[which.max(pred)])
-      }, simplify = "matrix")
+      fit <- tryCatch(
+        mgcv::gam(gam_formula, data = dat_boot, family = binomial,
+                  knots = list(doy = c(0, 365))),
+        error = function(e) NULL
+      )
+      if (is.null(fit)) return(rep(NA_real_, 3))
 
-      df_s           <- as.data.frame(t(boot_summary))
-      colnames(df_s) <- c("t1", "t2", "p_max")
-      df_s$station   <- s
-      df_s$prob_col  <- pc
-      df_s
-    },
-    mc.cores = n_cores
-  )
+      pred <- predict(fit, newdata = newdata_grid, type = "response")
+      w    <- which(pred >= threshold)
+      c(doy_grid[w[1L]], doy_grid[w[length(w)]], doy_grid[which.max(pred)])
+    }, simplify = TRUE)
+
+    # Guard against replicate() returning a list instead of a matrix
+    # (happens when some iterations fail to produce a plain numeric vector)
+    if (is.matrix(boot_summary)) {
+      df_s <- as.data.frame(t(boot_summary))
+    } else {
+      df_s <- as.data.frame(do.call(rbind, lapply(boot_summary, function(x) {
+        if (length(x) == 3 && is.numeric(x)) x else rep(NA_real_, 3)
+      })))
+    }
+    colnames(df_s) <- c("t1", "t2", "p_max")
+    df_s$station  <- s
+    df_s$prob_col <- pc
+    boot_results_g[[s]] <- df_s
+  }
 
   all_boot_results[[pc]] <- bind_rows(boot_results_g)
 }
@@ -2162,7 +2184,7 @@ ci_summary <- boot_all %>%
   pivot_longer(cols = c("t1", "t2", "p_max")) %>%
   group_by(station, name) %>%
   dplyr::summarise(
-    mean = mean(value, na.rm = TRUE),
+    mean  = mean(value, na.rm = TRUE),
     lower = quantile(value, 0.025, na.rm = TRUE),
     upper = quantile(value, 0.975, na.rm = TRUE),
     .groups = "drop"
@@ -2170,122 +2192,119 @@ ci_summary <- boot_all %>%
   pivot_wider(names_from = name, values_from = c(mean, lower, upper))
 
 bootstrap_results <- left_join(boot_all, station_and_waterbody)
-
 bootstrap_results$iteration <- rep(1:n_boot, times = length(unique(bootstrap_results$station)))
 
-group_diffs <- bootstrap_results %>%
-  group_by(iteration, water_body) %>%
- dplyr::summarise(mean_t1 = mean(t1, na.rm = T), .groups = "drop") %>%
-  pivot_wider(names_from = water_body, values_from = mean_t1) %>%
-  mutate(
-    estuary_vs_coastal = estuary - coastal,
-    estuary_vs_open = estuary - open,
-    coastal_vs_open = coastal - open
-  )
+# Bootstrap group differences and Cohen's d — run for ALL probability columns
+for (pc in names(all_boot_results)) {
+  if (nrow(all_boot_results[[pc]]) == 0) next
 
-group_diffs %>%
-  dplyr::summarise(
-    mean_diff = mean(estuary_vs_coastal, na.rm = T),
-    lower_CI = quantile(estuary_vs_coastal, 0.025, na.rm = T),
-    upper_CI = quantile(estuary_vs_coastal, 0.975, na.rm = T)
-  )
+  message("\n── Bootstrap group differences: ", pc, " ──")
 
-group_diffs %>%
-  dplyr::summarise(
-    mean_diff = mean(estuary_vs_open, na.rm = T),
-    lower_CI = quantile(estuary_vs_open, 0.025, na.rm = T),
-    upper_CI = quantile(estuary_vs_open, 0.975, na.rm = T)
-  )
+  boot_pc <- all_boot_results[[pc]]
+  boot_results_pc <- left_join(boot_pc, station_and_waterbody, by = "station")
+  boot_results_pc$iteration <- rep(1:n_boot, times = length(unique(boot_results_pc$station)))
 
-group_diffs %>%
-  dplyr::summarise(
-    mean_diff = mean(coastal_vs_open, na.rm = T),
-    lower_CI = quantile(coastal_vs_open, 0.025, na.rm = T),
-    upper_CI = quantile(coastal_vs_open, 0.975, na.rm = T)
-  )
+  # ── t1 ──
+  coastal_t1 <- boot_results_pc %>% filter(water_body == "coastal") %>% pull(t1)
+  estuary_t1 <- boot_results_pc %>% filter(water_body == "estuary") %>% pull(t1)
+  open_t1    <- boot_results_pc %>% filter(water_body == "open")    %>% pull(t1)
 
+  message("t1 Cohen's d (estuary vs coastal): ",
+    round((mean(estuary_t1, na.rm=TRUE) - mean(coastal_t1, na.rm=TRUE)) /
+          sqrt((sd(estuary_t1, na.rm=TRUE)^2 + sd(coastal_t1, na.rm=TRUE)^2) / 2), 3))
+  message("t1 Cohen's d (estuary vs open): ",
+    round((mean(estuary_t1, na.rm=TRUE) - mean(open_t1, na.rm=TRUE)) /
+          sqrt((sd(estuary_t1, na.rm=TRUE)^2 + sd(open_t1, na.rm=TRUE)^2) / 2), 3))
 
-coastal_t1 <- bootstrap_results %>% filter(water_body == "coastal") %>% pull(t1)
-estuary_t1 <- bootstrap_results %>% filter(water_body == "estuary") %>% pull(t1)
-open_t1 <- bootstrap_results %>% filter(water_body == "open") %>% pull(t1)
+  group_diffs_t1 <- boot_results_pc %>%
+    group_by(iteration, water_body) %>%
+    dplyr::summarise(mean_val = mean(t1, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(names_from = water_body, values_from = mean_val) %>%
+    mutate(estuary_vs_coastal = estuary - coastal,
+           estuary_vs_open    = estuary - open,
+           coastal_vs_open    = coastal - open)
 
-mean_diff <- mean(estuary_t1, na.rm = TRUE) - mean(coastal_t1, na.rm = TRUE)
-pooled_sd <- sqrt((sd(estuary_t1, na.rm = TRUE)^2 + sd(coastal_t1, na.rm = TRUE)^2) / 2)
+  print(group_diffs_t1 %>% dplyr::summarise(
+    mean_ec = mean(estuary_vs_coastal, na.rm=TRUE),
+    lwr_ec  = quantile(estuary_vs_coastal, 0.025, na.rm=TRUE),
+    upr_ec  = quantile(estuary_vs_coastal, 0.975, na.rm=TRUE),
+    mean_eo = mean(estuary_vs_open, na.rm=TRUE),
+    lwr_eo  = quantile(estuary_vs_open, 0.025, na.rm=TRUE),
+    upr_eo  = quantile(estuary_vs_open, 0.975, na.rm=TRUE),
+    mean_co = mean(coastal_vs_open, na.rm=TRUE),
+    lwr_co  = quantile(coastal_vs_open, 0.025, na.rm=TRUE),
+    upr_co  = quantile(coastal_vs_open, 0.975, na.rm=TRUE)
+  ))
 
-cohens_d <- mean_diff / pooled_sd
+  # ── t2 ──
+  coastal_t2 <- boot_results_pc %>% filter(water_body == "coastal") %>% pull(t2)
+  estuary_t2 <- boot_results_pc %>% filter(water_body == "estuary") %>% pull(t2)
+  open_t2    <- boot_results_pc %>% filter(water_body == "open")    %>% pull(t2)
 
-mean_diff <- mean(estuary_t1, na.rm = TRUE) - mean(open_t1, na.rm = TRUE)
-pooled_sd <- sqrt((sd(estuary_t1, na.rm = TRUE)^2 + sd(open_t1, na.rm = TRUE)^2) / 2)
+  message("t2 Cohen's d (estuary vs coastal): ",
+    round((mean(estuary_t2, na.rm=TRUE) - mean(coastal_t2, na.rm=TRUE)) /
+          sqrt((sd(estuary_t2, na.rm=TRUE)^2 + sd(coastal_t2, na.rm=TRUE)^2) / 2), 3))
+  message("t2 Cohen's d (estuary vs open): ",
+    round((mean(estuary_t2, na.rm=TRUE) - mean(open_t2, na.rm=TRUE)) /
+          sqrt((sd(estuary_t2, na.rm=TRUE)^2 + sd(open_t2, na.rm=TRUE)^2) / 2), 3))
 
-cohens_d <- mean_diff / pooled_sd
+  group_diffs_t2 <- boot_results_pc %>%
+    group_by(iteration, water_body) %>%
+    dplyr::summarise(mean_val = mean(t2, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(names_from = water_body, values_from = mean_val) %>%
+    mutate(estuary_vs_coastal = estuary - coastal,
+           estuary_vs_open    = estuary - open)
 
-group_diffs <- bootstrap_results %>%
-  group_by(iteration, water_body) %>%
-  dplyr::summarise(mean_t1 = mean(t2, na.rm = T), .groups = "drop") %>%
-  pivot_wider(names_from = water_body, values_from = mean_t1) %>%
-  mutate(
-    estuary_vs_coastal = estuary - coastal,
-    estuary_vs_open = estuary - open
-  )
+  print(group_diffs_t2 %>% dplyr::summarise(
+    mean_ec = mean(estuary_vs_coastal, na.rm=TRUE),
+    lwr_ec  = quantile(estuary_vs_coastal, 0.025, na.rm=TRUE),
+    upr_ec  = quantile(estuary_vs_coastal, 0.975, na.rm=TRUE),
+    mean_eo = mean(estuary_vs_open, na.rm=TRUE),
+    lwr_eo  = quantile(estuary_vs_open, 0.025, na.rm=TRUE),
+    upr_eo  = quantile(estuary_vs_open, 0.975, na.rm=TRUE)
+  ))
 
-group_diffs %>%
-  dplyr::summarise(
-    mean_diff = mean(estuary_vs_coastal, na.rm = T),
-    lower_CI = quantile(estuary_vs_coastal, 0.025, na.rm = T),
-    upper_CI = quantile(estuary_vs_coastal, 0.975, na.rm = T)
-  )
+  # ── p_max ──
+  coastal_pm <- boot_results_pc %>% filter(water_body == "coastal") %>% pull(p_max)
+  estuary_pm <- boot_results_pc %>% filter(water_body == "estuary") %>% pull(p_max)
+  open_pm    <- boot_results_pc %>% filter(water_body == "open")    %>% pull(p_max)
 
-group_diffs %>%
-  dplyr::summarise(
-    mean_diff = mean(estuary_vs_open, na.rm = T),
-    lower_CI = quantile(estuary_vs_open, 0.025, na.rm = T),
-    upper_CI = quantile(estuary_vs_open, 0.975, na.rm = T)
-  )
+  message("p_max Cohen's d (estuary vs coastal): ",
+    round((mean(estuary_pm, na.rm=TRUE) - mean(coastal_pm, na.rm=TRUE)) /
+          sqrt((sd(estuary_pm, na.rm=TRUE)^2 + sd(coastal_pm, na.rm=TRUE)^2) / 2), 3))
+  message("p_max Cohen's d (estuary vs open): ",
+    round((mean(estuary_pm, na.rm=TRUE) - mean(open_pm, na.rm=TRUE)) /
+          sqrt((sd(estuary_pm, na.rm=TRUE)^2 + sd(open_pm, na.rm=TRUE)^2) / 2), 3))
 
-coastal_t2 <- bootstrap_results %>% filter(water_body == "coastal") %>% pull(t2)
-estuary_t2 <- bootstrap_results %>% filter(water_body == "estuary") %>% pull(t2)
-open_t2 <- bootstrap_results %>% filter(water_body == "open") %>% pull(t2)
+  group_diffs_pm <- boot_results_pc %>%
+    group_by(iteration, water_body) %>%
+    dplyr::summarise(mean_val = mean(p_max, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(names_from = water_body, values_from = mean_val) %>%
+    mutate(estuary_vs_coastal = estuary - coastal,
+           estuary_vs_open    = estuary - open)
 
-mean_diff <- mean(estuary_t2, na.rm = TRUE) - mean(coastal_t2, na.rm = TRUE)
-pooled_sd <- sqrt((sd(estuary_t2, na.rm = TRUE)^2 + sd(coastal_t2, na.rm = TRUE)^2) / 2)
+  print(group_diffs_pm %>% dplyr::summarise(
+    mean_ec = mean(estuary_vs_coastal, na.rm=TRUE),
+    lwr_ec  = quantile(estuary_vs_coastal, 0.025, na.rm=TRUE),
+    upr_ec  = quantile(estuary_vs_coastal, 0.975, na.rm=TRUE),
+    mean_eo = mean(estuary_vs_open, na.rm=TRUE),
+    lwr_eo  = quantile(estuary_vs_open, 0.025, na.rm=TRUE),
+    upr_eo  = quantile(estuary_vs_open, 0.975, na.rm=TRUE)
+  ))
+}
 
-cohens_d <- mean_diff / pooled_sd
-cohens_d
+# Merge doyly_fit_characteristics with station_and_waterbody for ALL probability columns
+all_doyly_fit_chars_merged <- lapply(all_doyly_fit_chars, function(chars_df) {
+  chars_df %>%
+    full_join(station_and_waterbody, by = "station") %>%
+    filter(!is.infinite(t1) & !is.na(t1))
+})
 
-mean_diff <- mean(estuary_t2, na.rm = TRUE) - mean(open_t2, na.rm = TRUE)
-pooled_sd <- sqrt((sd(estuary_t2, na.rm = TRUE)^2 + sd(open_t2, na.rm = TRUE)^2) / 2)
-
-cohens_d <- mean_diff / pooled_sd
-cohens_d
-
-group_diffs <- bootstrap_results %>%
-  group_by(iteration, water_body) %>%
-  dplyr::summarise(mean_t1 = mean(p_max, na.rm = T), .groups = "drop") %>%
-  pivot_wider(names_from = water_body, values_from = mean_t1) %>%
-  mutate(
-    estuary_vs_coastal = estuary - coastal,
-    estuary_vs_open = estuary - open
-  )
-
-group_diffs %>%
-  dplyr::summarise(
-    mean_diff = mean(estuary_vs_coastal, na.rm = T),
-    lower_CI = quantile(estuary_vs_coastal, 0.025, na.rm = T),
-    upper_CI = quantile(estuary_vs_coastal, 0.975, na.rm = T)
-  )
-
-group_diffs %>%
-  dplyr::summarise(
-    mean_diff = mean(estuary_vs_open, na.rm = T),
-    lower_CI = quantile(estuary_vs_open, 0.025, na.rm = T),
-    upper_CI = quantile(estuary_vs_open, 0.975, na.rm = T)
-  )
-
-# merge with probparm_station_doyly_fit_characteristics_df containing t1, t2, pmax
+# Backward compat: keep overall as the standalone object used downstream
 probparm_station_doyly_fit_characteristics <-
- probparm_station_doyly_fit_characteristics %>%
- full_join(station_and_waterbody) %>%
- filter(!is.infinite(t1) & !is.na(t1))
+  if (!is.null(all_doyly_fit_chars_merged[["probability"]])) {
+    all_doyly_fit_chars_merged[["probability"]]
+  } else probparm_station_doyly_fit_characteristics
 
 # Calculate seasonal means – keep probability columns as integer, only convert strat/limiting_conditions
 filtered_data <- filtered_data %>%
@@ -2295,78 +2314,108 @@ filtered_data <- filtered_data %>%
 all_prob_cols_present <- all_prob_cols[all_prob_cols %in% colnames(filtered_data)]
 seasonal_means <- calculate_seasonal_mean(filtered_data, all_prob_cols_present)
 
-# Build sa_plot using the overall "probability" column (any harmful algae) as the y-axis baseline
-prob_only <- seasonal_means %>%
-  filter(parameter == "probability") %>%
-  dplyr::select(-parameter) %>%
-  dplyr::rename(probability = data)
-
-seasonal_means <- seasonal_means %>%
-  filter(parameter != "probability") %>%
-  left_join(prob_only, by = c("time", "station"))
-
 facet_parameters <- c("TN", "DIN", "chl", "temp", "limiting_conditions", "strat", "PO4", "sal")
 
-sa_plot <- seasonal_means %>%
-  filter(parameter %in% facet_parameters) %>%
-  mutate(parameter = factor(parameter, levels = facet_parameters)) %>%
-  group_by(parameter, station) %>%
-  dplyr::summarise(
-    data        = mean(data,        na.rm = TRUE),
-    probability = mean(probability, na.rm = TRUE),
-    .groups     = "drop"
+# Separate environmental rows from probability-column rows
+seasonal_means_env <- seasonal_means %>%
+  filter(!parameter %in% all_prob_cols_present)
+
+# Build and save fig3 for ALL probability columns (overall + per genus)
+# create_seasonal_means_plot() references sa_plot from the calling environment,
+# so we overwrite sa_plot in each iteration.
+for (.pc_fig3 in all_prob_cols_present) {
+  prob_only_pc <- seasonal_means %>%
+    filter(parameter == .pc_fig3) %>%
+    dplyr::select(-parameter) %>%
+    dplyr::rename(probability = data)
+
+  sa_plot <- seasonal_means_env %>%
+    left_join(prob_only_pc, by = c("time", "station")) %>%
+    filter(parameter %in% facet_parameters) %>%
+    mutate(parameter = factor(parameter, levels = facet_parameters)) %>%
+    group_by(parameter, station) %>%
+    dplyr::summarise(
+      data        = mean(data,        na.rm = TRUE),
+      probability = mean(probability, na.rm = TRUE),
+      .groups     = "drop"
+    )
+
+  .genus_arg <- if (.pc_fig3 == "probability") NULL else sub("^probability_", "", .pc_fig3)
+  .plots_pc  <- Map(create_seasonal_means_plot, facet_parameters, letters[1:8],
+                    MoreArgs = list(genus = .genus_arg))
+
+  facet_plots_grid <- wrap_plots(.plots_pc, ncol = 4, nrow = 2, guides = "collect") +
+    plot_layout(axis_titles = "collect")
+
+  ggsave(
+    paste0("fig3_manuscript_defense3_", .pc_fig3, ".png"),
+    facet_plots_grid,
+    path   = file.path(script_dir, "figures"),
+    dpi    = 300,
+    width  = 9,
+    height = 5,
+    units  = "in"
   )
+}
+rm(.pc_fig3, .genus_arg, .plots_pc)
 
-# Overall seasonal means figure (using overall "probability" column; no genus argument → generic label)
-plots <- Map(create_seasonal_means_plot, facet_parameters, letters[1:8])
-
-facet_plots_grid <- wrap_plots(plots, ncol = 4, nrow = 2, guides = "collect") +
-  plot_layout(axis_titles = "collect")
-
-ggsave(
-  "fig3_manuscript_defense3.png",
-  facet_plots_grid,
-  path   = file.path(script_dir, "figures"),
-  dpi    = 300,
-  width  = 9,
-  height = 5,
-  units  = "in"
-)
+# Restore sa_plot to the overall probability column for any downstream code
+if ("probability" %in% all_prob_cols_present) {
+  prob_only_overall <- seasonal_means %>%
+    filter(parameter == "probability") %>%
+    dplyr::select(-parameter) %>%
+    dplyr::rename(probability = data)
+  sa_plot <- seasonal_means_env %>%
+    left_join(prob_only_overall, by = c("time", "station")) %>%
+    filter(parameter %in% facet_parameters) %>%
+    mutate(parameter = factor(parameter, levels = facet_parameters)) %>%
+    group_by(parameter, station) %>%
+    dplyr::summarise(
+      data        = mean(data,        na.rm = TRUE),
+      probability = mean(probability, na.rm = TRUE),
+      .groups     = "drop"
+    )
+}
 
 # Statistical analysis and pairwise comparisons of station characteristics, i.e., the days after which
 # the probability of presence exceeds or falls below 10% and the DOY with the maximum probability
 # List of variables to perform operations on
 variables <- c("t1", "t2", "p_max")
 
-perform_aov <- function(var) {
- formula <- as.formula(paste(var, "~ water_body"))
+# ANOVA + Tukey HSD + station characteristics table — run for ALL probability columns
+for (.pc_aov in names(all_doyly_fit_chars_merged)) {
+  .chars_pc <- all_doyly_fit_chars_merged[[.pc_aov]]
+  if (is.null(.chars_pc) || nrow(.chars_pc) == 0) next
 
- aov_result <- aov(data = probparm_station_doyly_fit_characteristics, formula)
+  message("\n── ANOVA / Tukey HSD: ", .pc_aov, " ──")
 
- print(var)
- print(summary(aov_result))
- print(TukeyHSD(aov_result))
+  .perform_aov_pc <- function(var) {
+    aov_result <- aov(as.formula(paste(var, "~ water_body")), data = .chars_pc)
+    print(var)
+    print(summary(aov_result))
+    print(TukeyHSD(aov_result))
+  }
+  lapply(variables, .perform_aov_pc)
+
+  .chars_pc %>%
+    arrange(water_body) %>%
+    flextable() %>%
+    autofit() %>%
+    save_as_docx(path = file.path(script_dir,
+      paste0("probparm_station_doyly_fit_characteristics_", .pc_aov, ".docx")))
 }
+rm(.pc_aov, .chars_pc, .perform_aov_pc)
 
-aov_results_doyly_characteristics <- lapply(variables, perform_aov)
-
-# add station name and latitude to the dataframes
+# add station name and latitude to the overall doyly dataframes (backward compat)
 probparm_station_doyly <-
  full_join(probparm_station_doyly,
-      probparm_station_doyly_fit_characteristics %>% 
+      probparm_station_doyly_fit_characteristics %>%
        dplyr::select(lat, lon, station))
 
 probparm_station_doyly_fit <-
  full_join(probparm_station_doyly_fit,
-      probparm_station_doyly_fit_characteristics %>% 
+      probparm_station_doyly_fit_characteristics %>%
         dplyr::select(lat, lon, station))
-
-tab <-
- probparm_station_doyly_fit_characteristics %>%
- arrange(water_body) %>%
- flextable() %>%
- autofit() %>%
- save_as_docx(path = paste0(script_dir, "/", "probparm_station_doyly_fit_characteristics.docx"))
 
 ####### Observation count heatmaps – one panel per genus #######
 # Build a combined data frame: one row per station/year/genus with presence count
@@ -2454,10 +2503,11 @@ ggsave(
   width    = 9
 )
 
-####### PLOT PROBABILITY PATTERNS OVER TIME ####### 
+####### PLOT PROBABILITY PATTERNS OVER TIME #######
+# Overall "probability" (any harmful algae) — per-station monthly plots
 for (each_station in unique(probparm_station_monthly$station)) {
  p.subset <-
-  probparm_station_monthly %>% 
+  probparm_station_monthly %>%
   filter(station == each_station)
  filename <- paste0(each_station, "_CI", ".png")
  create_plot(
@@ -2467,8 +2517,29 @@ for (each_station in unique(probparm_station_monthly$station)) {
   "month",
   paste0(each_station, " monthly"),
   paste0(script_dir, "/", "figures", "/", "stations_monthly"),
-  filename 
+  filename
  )
+}
+
+# Per-genus per-station monthly plots
+for (genus in genera_of_interest) {
+  rlist      <- genus_ts_results[[genus]]
+  monthly_df <- if (!is.null(rlist)) rlist[["probparm_station_monthly"]] else NULL
+  if (is.null(monthly_df) || nrow(monthly_df) == 0) next
+
+  monthly_dir <- file.path(script_dir, "figures", genus, "station_monthly")
+  dir.create(monthly_dir, showWarnings = FALSE, recursive = TRUE)
+
+  for (each_station in unique(monthly_df$station)) {
+    p.subset <- monthly_df %>% filter(station == each_station)
+    create_plot(
+      p.subset, NULL, "station", "month",
+      paste0(each_station, " monthly"),
+      monthly_dir,
+      paste0(each_station, "_CI.png"),
+      genus = genus
+    )
+  }
 }
 
 # Monthly probability patterns of estuaries, coastal regions and open water stations
