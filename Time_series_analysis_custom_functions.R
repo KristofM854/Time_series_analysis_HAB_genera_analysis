@@ -1442,8 +1442,21 @@ create_plot <-
     y_lab <- if (!is.null(genus) && genus %in% names(genus_display_names)) {
       paste0("Probability of presence of ", genus_display_names[[genus]])
     } else {
-      "Probability of presence"
+      "Probability of presence of harmful algae"
     }
+
+    # Data-driven y-axis limits covering all plotted values (data + CIs + fitted line)
+    .y_vals <- c(
+      if ("data" %in% names(data))  data$data,
+      if ("upr"  %in% names(data))  data$upr,
+      if ("lwr"  %in% names(data))  data$lwr,
+      if (!is.null(model) && "data"                  %in% names(model)) model$data,
+      if (!is.null(model) && "predicted_probability" %in% names(model)) model$predicted_probability
+    )
+    .y_vals   <- .y_vals[is.finite(.y_vals) & .y_vals >= 0]
+    .y_max    <- if (length(.y_vals) > 0) max(.y_vals) else 1
+    .y_breaks <- pretty(c(0, .y_max), n = 5)
+    .y_lim    <- c(min(.y_breaks), max(.y_breaks))
 
     gg <-
       ggplot(data, aes(
@@ -1476,8 +1489,9 @@ create_plot <-
                     fill = "grey",
                     alpha = 0.25) +
         geom_line() +
-        geom_point()
-      
+        geom_point() +
+        scale_y_continuous(limits = .y_lim, breaks = .y_breaks, labels = .y_breaks, expand = c(0, 0))
+
     }
     
     if (x_var == "year" && any(grepl("month", filename))) {
@@ -1490,8 +1504,9 @@ create_plot <-
                     fill = "grey",
                     alpha = 0.25) +
         geom_line() +
-        geom_point()
-      
+        geom_point() +
+        scale_y_continuous(limits = .y_lim, breaks = .y_breaks, labels = .y_breaks, expand = c(0, 0))
+
     }
     
     if (x_var == "year" &&
@@ -1513,7 +1528,8 @@ create_plot <-
           label = round(unique(model$p_val), digits = 4),
           fontface = "bold",
           size = 6
-        ) 
+        ) +
+        scale_y_continuous(limits = .y_lim, breaks = .y_breaks, labels = .y_breaks, expand = c(0, 0))
     }
     
     if (x_var == "doy" & !(grepl("estuary|open|coastal", title_var)))
@@ -1522,17 +1538,17 @@ create_plot <-
         gg + geom_line(data = model, aes(x = doy, y = data), col = "blue") +
         geom_point() +
         xlab(paste0("time (", x_var, ")")) +
-        scale_x_continuous(limits = c(0, 365), 
+        scale_x_continuous(limits = c(0, 365),
                            breaks = seq(0, 365, 30), labels = seq(0, 365, 30), expand = c(0, 0))  +
-        scale_y_continuous(limits = c(0, 0.6), breaks = seq(0, 0.6, 0.1), labels = seq(0, 0.6, 0.1), expand = c(0, 0))
+        scale_y_continuous(limits = .y_lim, breaks = .y_breaks, labels = .y_breaks, expand = c(0, 0))
     }
-    
+
     if (grepl("estuary|open|coastal", title_var)) {
       gg <-
         gg + geom_line(data = model, aes(x = doy, y = data), col = "blue") +
-        scale_x_continuous(limits = c(0, 365), 
+        scale_x_continuous(limits = c(0, 365),
                            breaks = seq(0, 365, 30), labels = seq(0, 365, 30), expand = c(0, 0)) +
-        scale_y_continuous(limits = c(0, 0.6), breaks = seq(0, 0.6, 0.1), labels = seq(0, 0.6, 0.1), expand = c(0, 0))
+        scale_y_continuous(limits = .y_lim, breaks = .y_breaks, labels = .y_breaks, expand = c(0, 0))
       plots[[title_var]] <- gg
     }
     
@@ -1541,8 +1557,7 @@ create_plot <-
         gg <- gg +
           scale_x_continuous(breaks = seq(1996, 2020, by = 2),
                              limits = c(1996, 2020), expand = c(0, 0)) +
-          scale_y_continuous(limits = c(0, 0.7),
-                             breaks = seq(0, 0.7, by = 0.1), expand = c(0, 0)) +
+          scale_y_continuous(limits = .y_lim, breaks = .y_breaks, labels = .y_breaks, expand = c(0, 0)) +
           theme(plot.title = element_blank()) +
           geom_text(aes(x = 2005, y = 0.6, label = title_var), size = 5) +
           geom_point()
@@ -1565,6 +1580,13 @@ create_plot2 <-
            station_number,
            each_station,
            genus = NULL) {
+    # Data-driven y-axis limits covering all plotted values (data + CIs + fitted line)
+    .y_vals   <- c(data$data, data$upr, data$lwr, model$predicted_probability)
+    .y_vals   <- .y_vals[is.finite(.y_vals) & .y_vals >= 0]
+    .y_max    <- if (length(.y_vals) > 0) max(.y_vals) else 1
+    .y_breaks <- pretty(c(0, .y_max), n = 3)
+    .y_lim    <- c(min(.y_breaks), max(.y_breaks))
+
     gg <-
       ggplot(data, aes(
         x = !!sym(x_var),
@@ -1592,9 +1614,7 @@ create_plot2 <-
         plot.title.position = "plot"
       ) +
       labs(x = NULL) +
-      scale_y_continuous(limits = c(0, 0.65),
-                         breaks = seq(0, 0.5, by = 0.25),
-                         expand = c(0.01, 0.01))  +
+      scale_y_continuous(limits = .y_lim, breaks = .y_breaks, expand = c(0.01, 0.01))  +
       geom_line(aes(y = upr), col = "red", linewidth = 0.75) +
       geom_line(aes(y = lwr), col = "red", linewidth = 0.75) +
       geom_ribbon(aes(ymin = lwr, ymax = upr),
@@ -1623,8 +1643,7 @@ create_plot2 <-
       gg <- gg +
         theme(axis.text.x = element_markdown(size = 8)) +
         scale_y_continuous(
-          limits = c(0, 0.65),
-          breaks = seq(0, 0.5, by = 0.25),
+          limits = .y_lim, breaks = .y_breaks,
           position = "right",
           expand = c(0.01, 0.01)
         )
@@ -1643,18 +1662,11 @@ create_plot2 <-
     )) {
       gg <- gg +
         scale_y_continuous(
-          limits = c(0, 0.65),
-          breaks = seq(0, 0.5, by = 0.25),
+          limits = .y_lim, breaks = .y_breaks,
           position = "right",
           expand = c(0.01, 0.01)
         ) +
         theme(axis.text.y.right = element_markdown(size = 8, margin = margin(l = 10)))
-    }
-    if (each_station == "Indre Oslofjord") {
-      gg <- gg +
-        scale_y_continuous(limits = c(0, 0.8),
-                           breaks = seq(0, 0.75, by = 0.25),
-                           expand = c(0.01, 0.01))
     }
     
     return(gg)  
