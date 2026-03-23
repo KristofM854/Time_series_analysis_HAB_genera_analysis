@@ -2397,91 +2397,88 @@ for (.pc_aov in names(all_doyly_fit_chars_merged)) {
 }
 rm(.pc_aov, .chars_pc, .perform_aov_pc)
 
-####### Observation count heatmaps – one panel per genus #######
-# Build a combined data frame: one row per station/year/genus with presence count
-amount_of_observations_all <- map_dfr(genera_of_interest, function(genus) {
+####### Observation count heatmaps – one figure + table per genus #######
+for (genus in genera_of_interest) {
   pc <- prob_col_name(genus)
-  if (!pc %in% colnames(filtered_data)) return(tibble())
-  filtered_data %>%
+  if (!pc %in% colnames(filtered_data)) next
+
+  genus_obs <- filtered_data %>%
     filter(.data[[pc]] == 1L) %>%
-    mutate(genus_label = genus_display_names[[genus]]) %>%
-    group_by(station, year, genus_label) %>%
-    dplyr::summarize(n_presence = n(), .groups = "drop")
-}) %>%
-  left_join(unique_stations %>% dplyr::select(station, station_number), by = "station") %>%
-  arrange(desc(station_number)) %>%
-  mutate(station_number = factor(station_number, levels = unique(station_number)),
-         genus_label    = factor(genus_label, levels = genus_display_names))
+    group_by(station, year) %>%
+    dplyr::summarize(n_presence = n(), .groups = "drop") %>%
+    left_join(unique_stations %>% dplyr::select(station, station_number), by = "station") %>%
+    filter(!is.na(station_number))
 
-# Export observation table
-amount_of_observations_all %>%
-  flextable() %>%
-  autofit() %>%
-  save_as_docx(path = file.path(script_dir, "amount_of_observations.docx"))
+  if (nrow(genus_obs) == 0) next
 
-####### Heatmap of the amount of present observations per genus #######
-reordered_levels <- amount_of_observations_all %>%
-  dplyr::select(station_number) %>%
-  unique() %>%
-  mutate(station_number = as.character(station_number)) %>%
-  as_tibble() %>%
-  mutate(
-    group  = str_extract(station_number, "^[A-Z]+"),
-    number = as.numeric(str_extract(station_number, "\\d+"))
-  ) %>%
-  arrange(factor(group, levels = c("B", "D", "S", "L", "N", "NW")), number) %>%
-  pull(station_number)
+  # Ordered station levels consistent with other figures
+  reordered_levels <- genus_obs %>%
+    dplyr::select(station_number) %>%
+    distinct() %>%
+    mutate(station_number = as.character(station_number),
+           group  = str_extract(station_number, "^[A-Z]+"),
+           number = as.numeric(str_extract(station_number, "\\d+"))) %>%
+    arrange(factor(group, levels = c("B", "D", "S", "L", "N", "NW")), number) %>%
+    pull(station_number)
 
-amount_of_observations_all$station_number <- factor(
-  amount_of_observations_all$station_number,
-  levels = rev(reordered_levels)
-)
+  genus_obs <- genus_obs %>%
+    mutate(station_number = factor(as.character(station_number),
+                                   levels = rev(reordered_levels)))
 
-amount_of_observations_plot <-
-  ggplot(amount_of_observations_all %>% filter(year >= 1997),
-         aes(x = year, y = station_number, fill = n_presence)) +
-  geom_tile() +
-  scale_fill_viridis_c(
-    limits = c(0, 13),
-    breaks = seq(0, 13, by = 3),
-    labels = scales::label_number(accuracy = 1),
-    name   = stringr::str_wrap("Number of <br> present <br> observations", width = 2)
-  ) +
-  labs(title = "", x = "Time (year)", y = "Station") +
-  theme_classic() +
-  facet_wrap(
-    ~ genus_label,
-    ncol   = 2,
-    scales = "free_x"
-  ) +
-  theme(
-    plot.title       = element_markdown(),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    panel.background = element_rect(fill = "white"),
-    legend.title     = element_markdown(hjust = 0.5, size = 12, margin = margin(b = 10)),
-    axis.text.y      = element_markdown(),
-    strip.background = element_blank(),
-    axis.text        = element_markdown(),
-    strip.placement  = "outside",
-    strip.text       = element_markdown(hjust = 0, face = "bold")
-  ) +
-  scale_y_discrete(guide = guide_axis(n.dodge = 2), expand = c(0, 0)) +
-  scale_x_continuous(
-    breaks = seq(1996, 2025, by = 4),
-    limits = c(1996, 2025),
-    expand = c(0, 0),
-    labels = function(x) sprintf("%02d", x %% 100)
+  genus_dir <- file.path(script_dir, "figures", genus)
+  dir.create(genus_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # Export per-genus observation table
+  genus_obs %>%
+    flextable() %>%
+    autofit() %>%
+    save_as_docx(path = file.path(genus_dir,
+                                  paste0("amount_of_observations_", genus, ".docx")))
+
+  # Per-genus heatmap
+  amount_of_observations_plot <-
+    ggplot(genus_obs %>% filter(year >= 1997),
+           aes(x = year, y = station_number, fill = n_presence)) +
+    geom_tile() +
+    scale_fill_viridis_c(
+      limits = c(0, 13),
+      breaks = seq(0, 13, by = 3),
+      labels = scales::label_number(accuracy = 1),
+      name   = "Number of<br>present<br>observations"
+    ) +
+    labs(
+      title = paste0("*", genus_display_names[[genus]], "*"),
+      x     = "Time (year)",
+      y     = "Station"
+    ) +
+    theme_classic() +
+    theme(
+      plot.title       = element_markdown(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white"),
+      legend.title     = element_markdown(hjust = 0.5, size = 12, margin = margin(b = 10)),
+      axis.text.y      = element_markdown(),
+      axis.text        = element_markdown()
+    ) +
+    scale_y_discrete(guide = guide_axis(n.dodge = 2), expand = c(0, 0)) +
+    scale_x_continuous(
+      breaks = seq(1996, 2025, by = 4),
+      limits = c(1996, 2025),
+      expand = c(0, 0),
+      labels = function(x) sprintf("%02d", x %% 100)
+    )
+
+  n_stations <- length(reordered_levels)
+  ggsave(
+    filename = paste0("amount_of_observations_", genus, ".png"),
+    plot     = amount_of_observations_plot,
+    path     = genus_dir,
+    units    = "in",
+    height   = max(3, n_stations * 0.25 + 1),
+    width    = 6
   )
-
-ggsave(
-  filename = "amount_of_observations.png",
-  plot     = amount_of_observations_plot,
-  path     = file.path(script_dir, "figures"),
-  units    = "in",
-  height   = 14,
-  width    = 9
-)
+}
 
 ####### PLOT PROBABILITY PATTERNS OVER TIME #######
 # Per-station monthly plots for ALL probability columns
