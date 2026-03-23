@@ -29,7 +29,9 @@ install_packages <- function() {
     mgcv,
     officer,
     patchwork,
+    pROC,        # AUC for Phase 13.5 LOYO-CV
     purrr,
+    pwr,         # Post-hoc power analysis for Phase 13.8
     readr,
     readxl,
     rstatix,

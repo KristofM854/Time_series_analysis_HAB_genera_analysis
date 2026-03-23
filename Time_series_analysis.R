@@ -3013,83 +3013,286 @@ for (pc in all_prob_cols) {
 # These blocks lay the framework for enhanced analyses. Each section is
 # self-contained and can be enabled by setting the corresponding flag to TRUE.
 
+run_phase13_spatial      <- TRUE
+run_phase13_country_re   <- TRUE
+run_phase13_fdr          <- TRUE
+run_phase13_ar1          <- TRUE
+run_phase13_loyo_cv      <- TRUE
+run_phase13_cooccurrence <- TRUE
+run_phase13_power        <- TRUE
+
+phase13_results <- list()
+
 ## 13.1  Spatial correlation smooth s(lat, lon) --------------------------------
 # Add a 2-D thin-plate spline for station location to GAM formulas to capture
 # spatial autocorrelation among monitoring stations.
-#   Example formula:
-#     as.formula(paste0(pc, " ~ s(doy, bs='cp') + s(lat, lon, bs='tp', k=20)"))
-# Requires lat/lon columns in filtered_data (already present as numeric).
-# Set k conservatively (~20) to avoid overfitting with sparse station coverage.
+if (run_phase13_spatial) {
+  cat("Phase 13.1: Fitting spatial correlation GAMs...\n")
+  spatial_gam_results <- list()
+
+  for (pc in all_prob_cols) {
+    station_data_sp <- filtered_data %>%
+      filter(!is.na(.data[[pc]]), !is.na(lat), !is.na(lon))
+
+    if (nrow(station_data_sp) < 50 ||
+        length(unique(station_data_sp[[pc]])) < 2) next
+
+    # Determine k for spatial smooth: min(20, unique locations - 1)
+    n_unique_locs <- nrow(unique(station_data_sp[, c("lat", "lon")]))
+    k_spatial     <- min(20, n_unique_locs - 1)
+    if (k_spatial < 4) next
+
+    tryCatch({
+      gam_spatial <- mgcv::gam(
+        as.formula(paste0(pc, " ~ s(doy, bs = 'cp') + s(lat, lon, bs = 'tp', k = ", k_spatial, ")")),
+        data   = station_data_sp,
+        family = binomial,
+        knots  = list(x = c(0, 365))
+      )
+      spatial_gam_results[[pc]] <- list(
+        model   = gam_spatial,
+        summary = summary(gam_spatial),
+        aic     = AIC(gam_spatial),
+        n_obs   = nrow(station_data_sp)
+      )
+    }, error = function(e) {
+      message("  13.1 spatial GAM failed for ", pc, ": ", conditionMessage(e))
+    })
+  }
+  phase13_results$spatial_gam <- spatial_gam_results
+  cat("  Fitted", length(spatial_gam_results), "spatial GAMs.\n")
+}
 
 ## 13.2  Country random effect s(country, bs="re") ----------------------------
 # Include country as a random intercept using mgcv's "re" basis to account for
 # between-country variation in monitoring effort and reporting practices.
-#   model <- mgcv::gamm(
-#     as.formula(paste0(pc, " ~ s(doy, bs='cp') + s(country, bs='re')")),
-#     data   = station_data,
-#     family = binomial
-#   )
-# Note: gamm() handles the random-effect covariance structure; plain gam() with
-# bs="re" gives approximate results but is faster.
+if (run_phase13_country_re) {
+  cat("Phase 13.2: Fitting country random-effect GAMs...\n")
+  country_re_results <- list()
+
+  for (pc in all_prob_cols) {
+    station_data_re <- filtered_data %>%
+      filter(!is.na(.data[[pc]]), !is.na(country))
+
+    # Need at least 2 countries and both 0/1 outcomes
+    if (length(unique(station_data_re$country)) < 2 ||
+        length(unique(station_data_re[[pc]])) < 2) next
+
+    station_data_re$country_f <- as.factor(station_data_re$country)
+
+    tryCatch({
+      gam_country <- mgcv::gam(
+        as.formula(paste0(pc, " ~ s(doy, bs = 'cp') + s(country_f, bs = 're')")),
+        data   = station_data_re,
+        family = binomial,
+        knots  = list(x = c(0, 365))
+      )
+      country_re_results[[pc]] <- list(
+        model   = gam_country,
+        summary = summary(gam_country),
+        aic     = AIC(gam_country),
+        n_obs   = nrow(station_data_re)
+      )
+    }, error = function(e) {
+      message("  13.2 country RE GAM failed for ", pc, ": ", conditionMessage(e))
+    })
+  }
+  phase13_results$country_re <- country_re_results
+  cat("  Fitted", length(country_re_results), "country RE GAMs.\n")
+}
 
 ## 13.3  Benjamini-Hochberg FDR correction across genera ----------------------
-# After fitting GLMs across all genera, collect all p-values and apply FDR
-# correction to control the false discovery rate.
-#
-# Example (collect trend p-values from all_ts_results):
-#   all_pvals <- lapply(all_prob_cols, function(pc) {
-#     rlist <- all_ts_results[[pc]]
-#     if (is.null(rlist$result_year)) return(NULL)
-#     rlist$result_year %>%
-#       filter(term == "year") %>%
-#       mutate(genus = g, raw_p = p.value)
-#   }) %>% bind_rows()
-#
-#   all_pvals$adj_p <- p.adjust(all_pvals$raw_p, method = "BH")
-#   sig_genera <- all_pvals %>% filter(adj_p < 0.05)
+# Collect trend p-values from year logistic regressions and apply FDR correction.
+if (run_phase13_fdr) {
+  cat("Phase 13.3: Applying Benjamini-Hochberg FDR correction...\n")
+
+  all_pvals <- lapply(all_prob_cols, function(pc) {
+    rlist <- all_ts_results[[pc]]
+    if (is.null(rlist) || is.null(rlist$predicted_probs_station_yearly)) return(NULL)
+
+    pred_df <- rlist$predicted_probs_station_yearly
+    if (is.null(pred_df) || nrow(pred_df) == 0 || !"p_val" %in% colnames(pred_df)) return(NULL)
+
+    # Extract one p-value per station (they are repeated across years)
+    genus_tag <- sub("^probability_?", "", pc)
+    pred_df %>%
+      group_by(station) %>%
+      dplyr::summarise(raw_p = first(p_val), .groups = "drop") %>%
+      mutate(prob_col = pc,
+             genus    = ifelse(genus_tag == "", "overall", genus_tag))
+  }) %>% bind_rows()
+
+  if (nrow(all_pvals) > 0) {
+    all_pvals$adj_p      <- p.adjust(all_pvals$raw_p, method = "BH")
+    sig_after_fdr        <- all_pvals %>% filter(adj_p < 0.05)
+    phase13_results$fdr  <- list(
+      all_pvals     = all_pvals,
+      sig_after_fdr = sig_after_fdr,
+      n_tested      = nrow(all_pvals),
+      n_sig_raw     = sum(all_pvals$raw_p < 0.05, na.rm = TRUE),
+      n_sig_adj     = nrow(sig_after_fdr)
+    )
+    cat("  Tested", nrow(all_pvals), "station-genus combinations;",
+        sum(all_pvals$raw_p < 0.05, na.rm = TRUE), "raw sig,",
+        nrow(sig_after_fdr), "after FDR.\n")
+  } else {
+    phase13_results$fdr <- list(all_pvals = data.frame(), sig_after_fdr = data.frame())
+    cat("  No trend p-values available for FDR correction.\n")
+  }
+}
 
 ## 13.4  Temporal autocorrelation via bam() with AR(1) ------------------------
-# Use mgcv::bam() with the rho parameter or a correlation structure to account
-# for temporal autocorrelation within station time series.
-#
-#   model_ar1 <- mgcv::bam(
-#     as.formula(paste0(pc, " ~ s(doy, bs='cp')")),
-#     data       = station_data,
-#     family     = binomial,
-#     rho        = 0.3,           # estimated AR(1) autocorrelation coefficient
-#     AR.start   = station_data$year_start  # logical: TRUE at start of each year
-#   )
-# Estimate rho from residuals of a base GAM using acf(residuals(base_model)).
+# Use mgcv::bam() with the rho parameter to account for temporal autocorrelation.
+if (run_phase13_ar1) {
+  cat("Phase 13.4: Fitting AR(1) models via bam()...\n")
+  ar1_results <- list()
+
+  for (pc in all_prob_cols) {
+    station_data_ar <- filtered_data %>%
+      filter(!is.na(.data[[pc]])) %>%
+      arrange(station, year, doy)
+
+    if (nrow(station_data_ar) < 50 ||
+        length(unique(station_data_ar[[pc]])) < 2) next
+
+    tryCatch({
+      # Fit base GAM to estimate rho from residuals
+      base_gam <- mgcv::gam(
+        as.formula(paste0(pc, " ~ s(doy, bs = 'cp')")),
+        data   = station_data_ar,
+        family = binomial,
+        knots  = list(x = c(0, 365))
+      )
+      resids    <- residuals(base_gam, type = "response")
+      acf_vals  <- acf(resids, lag.max = 1, plot = FALSE)
+      rho_est   <- acf_vals$acf[2]
+
+      # Mark start of each station's time series for AR.start
+      station_data_ar <- station_data_ar %>%
+        mutate(ar_start = !duplicated(station))
+
+      model_ar1 <- mgcv::bam(
+        as.formula(paste0(pc, " ~ s(doy, bs = 'cp')")),
+        data     = station_data_ar,
+        family   = binomial,
+        rho      = rho_est,
+        AR.start = station_data_ar$ar_start,
+        knots    = list(x = c(0, 365))
+      )
+
+      ar1_results[[pc]] <- list(
+        model   = model_ar1,
+        rho     = rho_est,
+        summary = summary(model_ar1),
+        aic     = AIC(model_ar1),
+        n_obs   = nrow(station_data_ar)
+      )
+    }, error = function(e) {
+      message("  13.4 AR(1) bam failed for ", pc, ": ", conditionMessage(e))
+    })
+  }
+  phase13_results$ar1 <- ar1_results
+  cat("  Fitted", length(ar1_results), "AR(1) models.\n")
+}
 
 ## 13.5  Leave-one-year-out cross-validation ----------------------------------
 # Assess model predictive skill by iteratively holding out one year at a time.
-#
-#   years_cv  <- unique(station_data$year)
-#   cv_auc    <- numeric(length(years_cv))
-#   for (i in seq_along(years_cv)) {
-#     train  <- station_data %>% filter(year != years_cv[i])
-#     test   <- station_data %>% filter(year == years_cv[i])
-#     m_cv   <- mgcv::gam(formula, data = train, family = binomial)
-#     pred   <- predict(m_cv, test, type = "response")
-#     cv_auc[i] <- pROC::auc(test[[pc]], pred)
-#   }
-#   mean_auc <- mean(cv_auc, na.rm = TRUE)
+if (run_phase13_loyo_cv) {
+  cat("Phase 13.5: Running leave-one-year-out cross-validation...\n")
+  loyo_results <- list()
+
+  for (pc in all_prob_cols) {
+    station_data_cv <- filtered_data %>%
+      filter(!is.na(.data[[pc]])) %>%
+      arrange(station, year, doy)
+
+    if (nrow(station_data_cv) < 50 ||
+        length(unique(station_data_cv[[pc]])) < 2) next
+
+    years_cv <- sort(unique(station_data_cv$year))
+    if (length(years_cv) < 3) next
+
+    cv_auc <- numeric(length(years_cv))
+
+    for (i in seq_along(years_cv)) {
+      tryCatch({
+        train <- station_data_cv %>% filter(year != years_cv[i])
+        test  <- station_data_cv %>% filter(year == years_cv[i])
+
+        if (length(unique(train[[pc]])) < 2 ||
+            length(unique(test[[pc]])) < 2 ||
+            nrow(test) < 5) {
+          cv_auc[i] <- NA_real_
+          next
+        }
+
+        m_cv <- mgcv::gam(
+          as.formula(paste0(pc, " ~ s(doy, bs = 'cp')")),
+          data   = train,
+          family = binomial,
+          knots  = list(x = c(0, 365))
+        )
+        pred <- predict(m_cv, newdata = test, type = "response")
+        cv_auc[i] <- as.numeric(pROC::auc(
+          pROC::roc(test[[pc]], pred, quiet = TRUE)
+        ))
+      }, error = function(e) {
+        cv_auc[i] <<- NA_real_
+      })
+    }
+
+    loyo_results[[pc]] <- list(
+      year_auc = data.frame(year = years_cv, auc = cv_auc),
+      mean_auc = mean(cv_auc, na.rm = TRUE),
+      sd_auc   = sd(cv_auc, na.rm = TRUE),
+      n_years  = length(years_cv)
+    )
+  }
+  phase13_results$loyo_cv <- loyo_results
+  cat("  Cross-validated", length(loyo_results), "models. Mean AUCs:\n")
+  for (nm in names(loyo_results)) {
+    cat("    ", nm, ":", round(loyo_results[[nm]]$mean_auc, 3), "\n")
+  }
+}
 
 ## 13.6  Co-occurrence analysis (station x genus presence matrix) -------------
-# Build a binary matrix (stations x genera) to identify co-occurring blooms and
-# compute pairwise Jaccard similarity or phi (point-biserial) correlation.
-#
-#   presence_mat <- filtered_data %>%
-#     group_by(combined_station) %>%
-#     dplyr::summarise(across(all_of(sapply(genera_of_interest, prob_col_name)),
-#                             ~ as.integer(any(. == 1L, na.rm = TRUE)),
-#                             .names = "{.col}")) %>%
-#     column_to_rownames("combined_station")
-#
-#   # Jaccard similarity matrix
-#   jaccard_mat <- proxy::dist(t(presence_mat), method = "Jaccard")
-#   # Phi correlation
-#   phi_mat     <- cor(presence_mat, use = "pairwise.complete.obs")
+# Build a binary matrix (stations x genera) to identify co-occurring blooms.
+if (run_phase13_cooccurrence) {
+  cat("Phase 13.6: Building co-occurrence matrix...\n")
+
+  genus_prob_cols <- sapply(genera_of_interest, prob_col_name)
+  genus_prob_cols <- genus_prob_cols[genus_prob_cols %in% colnames(filtered_data)]
+
+  if (length(genus_prob_cols) >= 2) {
+    presence_mat <- filtered_data %>%
+      group_by(station) %>%
+      dplyr::summarise(
+        across(all_of(genus_prob_cols),
+               ~ as.integer(any(. == 1L, na.rm = TRUE)),
+               .names = "{.col}"),
+        .groups = "drop"
+      ) %>%
+      tibble::column_to_rownames("station")
+
+    # Phi (point-biserial) correlation matrix
+    phi_mat <- cor(presence_mat, use = "pairwise.complete.obs")
+
+    # Clean up column names for display
+    colnames(phi_mat) <- sub("^probability_", "", colnames(phi_mat))
+    rownames(phi_mat) <- sub("^probability_", "", rownames(phi_mat))
+
+    phase13_results$cooccurrence <- list(
+      presence_mat = presence_mat,
+      phi_mat      = phi_mat,
+      n_stations   = nrow(presence_mat),
+      n_genera     = ncol(presence_mat)
+    )
+    cat("  Built", nrow(presence_mat), "station x", ncol(presence_mat),
+        "genera presence matrix.\n")
+  } else {
+    cat("  Fewer than 2 genera probability columns found; skipping.\n")
+  }
+}
 
 ## 13.7  Bootstrap sensitivity analysis (reduce iterations for testing) --------
 # When running full bootstrap (Phase 7), use n_boot = 100 for exploratory runs
@@ -3097,17 +3300,74 @@ for (pc in all_prob_cols) {
 # earlier in the script.
 
 ## 13.8  Post-hoc power analysis ----------------------------------------------
-# After obtaining effect sizes (beta coefficients from year GLMs), compute the
-# minimum number of observations needed to detect the observed effect at 80% power.
-#
-#   library(pwr)
-#   # For logistic regression, use Cohen's h on proportions:
-#   prop_start <- plogis(coef(year_model)[["(Intercept)"]])
-#   prop_end   <- plogis(coef(year_model)[["(Intercept)"]] +
-#                        coef(year_model)[["year"]] * n_years)
-#   h          <- pwr::ES.h(prop_end, prop_start)
-#   pwr_result <- pwr::pwr.p.test(h = h, sig.level = 0.05, power = 0.80)
-#   # pwr_result$n gives minimum required observations
+# After obtaining effect sizes from year logistic regressions, compute minimum
+# sample size needed at 80% power.
+if (run_phase13_power) {
+  cat("Phase 13.8: Running post-hoc power analysis...\n")
+  power_results <- list()
+
+  for (pc in all_prob_cols) {
+    genus_tag <- sub("^probability_?", "", pc)
+    gml_name  <- paste0("global_models_list_", genus_tag)
+
+    if (!exists(gml_name, envir = .GlobalEnv)) next
+    gml <- get(gml_name, envir = .GlobalEnv)
+
+    for (stn in names(gml)) {
+      model <- gml[[stn]]$probability_year_log_reg
+      if (is.null(model)) next
+
+      tryCatch({
+        coefs   <- coef(model)
+        if (!"year" %in% names(coefs) || is.na(coefs[["year"]])) next
+
+        n_years <- length(unique(model$data$year))
+        if (n_years < 2) next
+
+        prop_start <- plogis(coefs[["(Intercept)"]])
+        prop_end   <- plogis(coefs[["(Intercept)"]] + coefs[["year"]] * n_years)
+
+        # Clamp to valid range for ES.h
+        prop_start <- max(min(prop_start, 0.999), 0.001)
+        prop_end   <- max(min(prop_end,   0.999), 0.001)
+
+        h <- pwr::ES.h(prop_end, prop_start)
+        if (is.na(h) || abs(h) < 1e-6) next
+
+        pwr_result <- pwr::pwr.p.test(h = abs(h), sig.level = 0.05, power = 0.80)
+
+        power_results[[paste0(pc, "::", stn)]] <- list(
+          genus      = ifelse(genus_tag == "", "overall", genus_tag),
+          station    = stn,
+          prop_start = prop_start,
+          prop_end   = prop_end,
+          cohens_h   = h,
+          min_n      = ceiling(pwr_result$n),
+          n_years    = n_years
+        )
+      }, error = function(e) {
+        message("  13.8 power analysis failed for ", pc, " @ ", stn, ": ",
+                conditionMessage(e))
+      })
+    }
+  }
+
+  if (length(power_results) > 0) {
+    power_df <- bind_rows(lapply(power_results, as.data.frame))
+    phase13_results$power <- list(
+      power_df     = power_df,
+      n_analysed   = nrow(power_df),
+      median_min_n = median(power_df$min_n, na.rm = TRUE)
+    )
+    cat("  Analysed", nrow(power_df), "station-genus combinations.",
+        "Median min n =", median(power_df$min_n, na.rm = TRUE), "\n")
+  } else {
+    phase13_results$power <- list(power_df = data.frame(), n_analysed = 0)
+    cat("  No valid year-trend models found for power analysis.\n")
+  }
+}
+
+cat("\n── Phase 13 complete ──────────────────────────────────────────────────────\n")
 
 gc()
 rm(list = ls())
