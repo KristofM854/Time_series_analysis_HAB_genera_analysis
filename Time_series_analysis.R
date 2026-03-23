@@ -2234,7 +2234,15 @@ for (pc in names(all_boot_results)) {
   group_diffs_t1 <- boot_results_pc %>%
     group_by(iteration, water_body) %>%
     dplyr::summarise(mean_val = mean(t1, na.rm = TRUE), .groups = "drop") %>%
-    pivot_wider(names_from = water_body, values_from = mean_val) %>%
+    pivot_wider(names_from = water_body, values_from = mean_val)
+
+  # Add missing water-body columns as NA so mutate() never errors
+  for (.wb in c("estuary", "coastal", "open")) {
+    if (!.wb %in% colnames(group_diffs_t1))
+      group_diffs_t1[[.wb]] <- NA_real_
+  }
+
+  group_diffs_t1 <- group_diffs_t1 %>%
     mutate(estuary_vs_coastal = estuary - coastal,
            estuary_vs_open    = estuary - open,
            coastal_vs_open    = coastal - open)
@@ -2266,7 +2274,14 @@ for (pc in names(all_boot_results)) {
   group_diffs_t2 <- boot_results_pc %>%
     group_by(iteration, water_body) %>%
     dplyr::summarise(mean_val = mean(t2, na.rm = TRUE), .groups = "drop") %>%
-    pivot_wider(names_from = water_body, values_from = mean_val) %>%
+    pivot_wider(names_from = water_body, values_from = mean_val)
+
+  for (.wb in c("estuary", "coastal", "open")) {
+    if (!.wb %in% colnames(group_diffs_t2))
+      group_diffs_t2[[.wb]] <- NA_real_
+  }
+
+  group_diffs_t2 <- group_diffs_t2 %>%
     mutate(estuary_vs_coastal = estuary - coastal,
            estuary_vs_open    = estuary - open)
 
@@ -2294,7 +2309,14 @@ for (pc in names(all_boot_results)) {
   group_diffs_pm <- boot_results_pc %>%
     group_by(iteration, water_body) %>%
     dplyr::summarise(mean_val = mean(p_max, na.rm = TRUE), .groups = "drop") %>%
-    pivot_wider(names_from = water_body, values_from = mean_val) %>%
+    pivot_wider(names_from = water_body, values_from = mean_val)
+
+  for (.wb in c("estuary", "coastal", "open")) {
+    if (!.wb %in% colnames(group_diffs_pm))
+      group_diffs_pm[[.wb]] <- NA_real_
+  }
+
+  group_diffs_pm <- group_diffs_pm %>%
     mutate(estuary_vs_coastal = estuary - coastal,
            estuary_vs_open    = estuary - open)
 
