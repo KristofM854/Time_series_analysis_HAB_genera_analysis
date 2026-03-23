@@ -699,7 +699,9 @@ check_and_fit <- function(data,
 ####### Functions to calculate seasonal means of abiotic parameters #######  
 # Helper function to set up the binomial glm of the stratification and limiting conditions index
 fit_binomial_glm <- function(df, response, station) {
-  if (nlevels(droplevels(df[[response]])) < 2) return(NULL)
+  col <- df[[response]]
+  n_unique <- if (is.factor(col)) nlevels(droplevels(col)) else length(unique(col[!is.na(col)]))
+  if (n_unique < 2) return(NULL)
   mod <- as.formula(sprintf("factor(%s) ~ factor(month) + 0", response))
   glm_fit <- glm(mod, data = df, family = "binomial")
   coef_exp <- exp(coef(glm_fit))
