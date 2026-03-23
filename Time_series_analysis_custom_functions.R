@@ -696,72 +696,27 @@ check_and_fit <- function(data,
   }
 }
 
-####### Functions to calculate seasonal means of abiotic parameters #######  
-# Helper function to set up the binomial glm of the stratification and limiting conditions index
-fit_binomial_glm <- function(df, response, station) {
-  col <- df[[response]]
-  n_unique <- if (is.factor(col)) nlevels(droplevels(col)) else length(unique(col[!is.na(col)]))
-  if (n_unique < 2) return(NULL)
-  mod <- as.formula(sprintf("factor(%s) ~ factor(month) + 0", response))
-  glm_fit <- glm(mod, data = df, family = "binomial")
-  coef_exp <- exp(coef(glm_fit))
-  data.frame(data = coef_exp / (1 + coef_exp)) %>%
-    tibble::rownames_to_column("time") %>%
-    filter(str_detect(time, "month")) %>%
-    mutate(
-      time = readr::parse_number(time),
-      station = station,
-      parameter = response
-    )
-}
-
-# Helper function to perform the binomial glm of the stratification and limiting conditions index ####
-process_prob_col <- function(station_data, prob_col, station) {
-  min_year <- station_data %>%
-    filter(.data[[prob_col]] == 1) %>%
-    pull(year) %>%
-    min(na.rm = TRUE)
-  
-  min_year <- ifelse(is.finite(min_year) && min_year < 2000, 2000, min_year)
-  
-  present_years_only <- station_data %>%
-    filter(year >= 2008, month >= 5, month <= 10)
-  
-  absent_entries <- sum(present_years_only[[prob_col]] == 0, na.rm = TRUE)
-  present_entries <- sum(present_years_only[[prob_col]] == 1, na.rm = TRUE)
-  
-  if (absent_entries >= 25 & present_entries >= 6) {
-    responses <- c(prob_col, "limiting_conditions", "strat")
-    map_dfr(responses, ~fit_binomial_glm(present_years_only, .x, station))
-  } else {
-    NULL
-  }
-}
-
-# Helper function to perform the glms for the abiotic parameters ####
+####### Helper: month-balanced Gaussian GLM for continuous environmental parameters #######
+# Fits param ~ factor(month) + 0; uses log-link for most params.
+# Returns monthly coefficient estimates (one row per month per station).
 process_parameter_model <- function(station_data, param, station) {
-
-    param_data <- station_data %>%
+  param_data <- station_data %>%
     filter(year >= 2008, month >= 5, month <= 10) %>%
     drop_na(!!sym(param)) %>%
-    filter(!is.infinite(!!sym(param))) 
+    filter(!is.infinite(!!sym(param)))
 
   if (nrow(param_data) <= 25) return(NULL)
-  
+
   mod <- as.formula(sprintf("%s ~ factor(month) + 0", param))
-  
-  # Parameters that should NOT use log-link
-  no_log <- c("temp", "wind_ms", "sal", "chl", "C_chl")
+
+  no_log  <- c("temp", "wind_ms", "sal", "chl", "C_chl")
   use_log <- !(param %in% no_log)
-  
-  # If log-link is to be used, check for negatives and add small constant if needed
+
   if (use_log) {
     if (any(param_data[[param]] < 0, na.rm = TRUE)) return(NULL)
     min_positive <- min(param_data[[param]][param_data[[param]] > 0], na.rm = TRUE)
-    if (is.finite(min_positive)) {
+    if (is.finite(min_positive))
       param_data[[param]] <- param_data[[param]] + min_positive / 10
-    }
-    
     glm_fit <- tryCatch(
       glm(mod, data = param_data, family = gaussian(link = "log")),
       error = function(e) NULL
@@ -772,43 +727,84 @@ process_parameter_model <- function(station_data, param, station) {
       error = function(e) NULL
     )
   }
-  
+
   if (is.null(glm_fit)) return(NULL)
-  
+
   coefs <- coef(glm_fit)
   coefs <- if (use_log) exp(coefs) else coefs
-  
+
   tibble::enframe(coefs, name = "month_factor", value = "data") %>%
     filter(stringr::str_detect(month_factor, "month")) %>%
     mutate(
-      time = readr::parse_number(month_factor),
-      station = station,
+      time      = readr::parse_number(month_factor),
+      station   = station,
       parameter = param
     ) %>%
     dplyr::select(time, station, parameter, data)
 }
 
-####### Function to calculate the seasonal means using the three upper helper functions ####### 
+####### Helper: month-balanced binomial GLM for binary environmental parameters #######
+# Used for strat and limiting_conditions (x-axis).
+# Returns a single row per station: the mean of per-month logistic probabilities.
+process_binary_env_col <- function(station_data, col_name, station) {
+  col_data <- station_data %>%
+    filter(year >= 2008, month >= 5, month <= 10) %>%
+    mutate(across(all_of(col_name), ~ as.numeric(as.character(.x))))
+
+  col_vals <- col_data[[col_name]]
+  if (length(unique(col_vals[!is.na(col_vals)])) < 2) return(NULL)
+
+  mod <- as.formula(sprintf("factor(%s) ~ factor(month) + 0", col_name))
+  fit <- tryCatch(
+    glm(mod, data = col_data, family = "binomial"),
+    error = function(e) NULL
+  )
+  if (is.null(fit)) return(NULL)
+
+  coefs        <- exp(coef(fit))
+  monthly_prob <- coefs / (1 + coefs)
+  tibble(station = station, parameter = col_name, data = mean(monthly_prob, na.rm = TRUE))
+}
+
+####### Function to calculate seasonal means #######
+# X-axis (environmental params):
+#   - Continuous (TN, DIN, chl, temp, PO4, sal, ...): month-balanced via Gaussian GLM
+#   - Binary (strat, limiting_conditions): month-balanced via binomial GLM
+# Y-axis (probability columns): raw empirical proportion of presences (mean of 0/1),
+#   applied to ALL genera — no data threshold.
+# Returns: station | parameter | data  (one row per station per parameter)
 calculate_seasonal_mean <- function(data, probability_columns) {
-  parameters <- c("NH4", "NO3", "sal", "temp", "TN", "PO4", "chl",
-                  "DIP", "DIN", "N_P", "C_chl", "silicate", "Si_N")
-  
-  data %>%
-    split(.$station) %>%
-    map_dfr(function(station_data) {
-      station <- unique(station_data$station)
-      
-      # Defensive: skip if empty or missing year column
-      if (nrow(station_data) == 0 || !"year" %in% names(station_data)) {
-        return(tibble())
-      }
-      
-      prob_results <- map_dfr(probability_columns, ~process_prob_col(station_data, .x, station))
-      
-      param_results <- map_dfr(parameters, ~process_parameter_model(station_data, .x, station))
-      
-      bind_rows(prob_results, param_results)
-    })
+  continuous_params <- c("NH4", "NO3", "sal", "temp", "TN", "PO4", "chl",
+                         "DIP", "DIN", "N_P", "C_chl", "silicate", "Si_N")
+  binary_params     <- c("limiting_conditions", "strat")
+
+  stations <- split(data, data$station)
+
+  # 1. Continuous env params: GLM monthly estimates, then average per station
+  env_means <- map_dfr(stations, function(sd) {
+    st <- unique(sd$station)
+    map_dfr(continuous_params, ~ process_parameter_model(sd, .x, st))
+  }) %>%
+    group_by(station, parameter) %>%
+    summarise(data = mean(data, na.rm = TRUE), .groups = "drop")
+
+  # 2. Binary env params: binomial GLM monthly probabilities, then average per station
+  binary_means <- map_dfr(stations, function(sd) {
+    st <- unique(sd$station)
+    map_dfr(binary_params[binary_params %in% names(sd)],
+            ~ process_binary_env_col(sd, .x, st))
+  })
+
+  # 3. Probability columns: raw empirical proportion (no GLM, no threshold)
+  prob_cols_present <- probability_columns[probability_columns %in% names(data)]
+  prob_means <- data %>%
+    filter(year >= 2008, month >= 5, month <= 10) %>%
+    group_by(station) %>%
+    summarise(across(all_of(prob_cols_present),
+                     ~ mean(as.numeric(.x), na.rm = TRUE)), .groups = "drop") %>%
+    pivot_longer(-station, names_to = "parameter", values_to = "data")
+
+  bind_rows(env_means, binary_means, prob_means)
 }
 
 ####### Custom labeller function for abiotic parameter plots ####### 

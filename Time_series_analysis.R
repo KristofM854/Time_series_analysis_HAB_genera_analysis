@@ -2337,11 +2337,7 @@ all_doyly_fit_chars_merged <- lapply(all_doyly_fit_chars, function(chars_df) {
     filter(!is.infinite(t1) & !is.na(t1))
 })
 
-# Calculate seasonal means – keep probability columns as integer, only convert strat/limiting_conditions
-filtered_data <- filtered_data %>%
-  convert_as_factor(strat, limiting_conditions)
-
-# Calculate seasonal means for ALL probability columns (overall + per genus)
+# Calculate station-level seasonal means (May–Oct average, year >= 2008) for plotting
 all_prob_cols_present <- all_prob_cols[all_prob_cols %in% colnames(filtered_data)]
 seasonal_means <- calculate_seasonal_mean(filtered_data, all_prob_cols_present)
 
@@ -2357,19 +2353,12 @@ seasonal_means_env <- seasonal_means %>%
 for (.pc_fig3 in all_prob_cols_present) {
   prob_only_pc <- seasonal_means %>%
     filter(parameter == .pc_fig3) %>%
-    dplyr::select(-parameter) %>%
-    dplyr::rename(probability = data)
+    dplyr::select(station, probability = data)
 
   sa_plot <- seasonal_means_env %>%
-    left_join(prob_only_pc, by = c("time", "station")) %>%
     filter(parameter %in% facet_parameters) %>%
-    mutate(parameter = factor(parameter, levels = facet_parameters)) %>%
-    group_by(parameter, station) %>%
-    dplyr::summarise(
-      data        = mean(data,        na.rm = TRUE),
-      probability = mean(probability, na.rm = TRUE),
-      .groups     = "drop"
-    )
+    left_join(prob_only_pc, by = "station") %>%
+    mutate(parameter = factor(parameter, levels = facet_parameters))
 
   .genus_arg <- if (.pc_fig3 == "probability") NULL else sub("^probability_", "", .pc_fig3)
   .plots_pc  <- Map(create_seasonal_means_plot, facet_parameters, letters[1:8],
