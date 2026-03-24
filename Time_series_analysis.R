@@ -2832,7 +2832,7 @@ for (pc in all_prob_cols) {
 
 # Use overall "probability" results for the methodology illustration figure (Fig 2)
 overall_doyly     <- all_ts_results[["probability"]][["probparm_station_doyly"]]
-overall_doyly_fit <- all_ts_results[["probability"]][["predicted_probs_station_doyly"]]
+overall_doyly_fit <- all_ts_results[["probability"]][["probparm_station_doyly_fit"]]
 
 if (!is.null(overall_doyly) && nrow(overall_doyly) > 0) {
   overall_doyly     <- left_join(overall_doyly,     station_and_waterbody)
