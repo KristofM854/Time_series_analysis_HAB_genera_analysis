@@ -795,14 +795,40 @@ calculate_seasonal_mean <- function(data, probability_columns) {
             ~ process_binary_env_col(sd, .x, st))
   })
 
-  # 3. Probability columns: raw empirical proportion (no GLM, no threshold)
+  # 3. Probability columns: month-balanced via binomial GLM (consistent with x-axis).
+  # Falls back to raw mean when GLM cannot be fit (< 2 unique values or < 2 months).
   prob_cols_present <- probability_columns[probability_columns %in% names(data)]
-  prob_means <- data %>%
-    filter(year >= 2008, month >= 5, month <= 10) %>%
-    group_by(station) %>%
-    summarise(across(all_of(prob_cols_present),
-                     ~ mean(as.numeric(.x), na.rm = TRUE)), .groups = "drop") %>%
-    pivot_longer(-station, names_to = "parameter", values_to = "data")
+  prob_means <- map_dfr(stations, function(sd) {
+    st          <- unique(sd$station)
+    sd_filtered <- sd %>% filter(year >= 2008, month >= 5, month <= 10)
+
+    map_dfr(prob_cols_present, function(pc) {
+      pc_data <- sd_filtered %>% drop_na(!!sym(pc))
+      pc_vals <- pc_data[[pc]]
+
+      # Need both 0 and 1 values AND at least 2 months to fit GLM
+      if (length(unique(pc_vals[!is.na(pc_vals)])) < 2 ||
+          length(unique(pc_data$month)) < 2) {
+        return(tibble(station = st, parameter = pc,
+                      data = mean(as.numeric(pc_vals), na.rm = TRUE)))
+      }
+
+      fit <- tryCatch(
+        glm(as.formula(paste0(pc, " ~ factor(month) + 0")),
+            data = pc_data, family = "binomial"),
+        error = function(e) NULL
+      )
+
+      if (is.null(fit)) {
+        return(tibble(station = st, parameter = pc,
+                      data = mean(as.numeric(pc_vals), na.rm = TRUE)))
+      }
+
+      # Convert logit coefficients to probabilities, then average across months
+      monthly_probs <- exp(coef(fit)) / (1 + exp(coef(fit)))
+      tibble(station = st, parameter = pc, data = mean(monthly_probs, na.rm = TRUE))
+    })
+  })
 
   bind_rows(env_means, binary_means, prob_means)
 }
@@ -846,7 +872,7 @@ create_seasonal_means_plot <- function(facet_name, label, genus = NULL) {
   }
 
   p_subset <- sa_plot %>%
-    filter(parameter == facet_name & probability > 0) %>%
+    filter(parameter == facet_name) %>%
     drop_na(probability, data)
 
   p <- ggplot(p_subset, aes(x = data, y = probability)) +
@@ -858,9 +884,8 @@ create_seasonal_means_plot <- function(facet_name, label, genus = NULL) {
       strip.position = "bottom"
     ) +
     scale_y_continuous(
-      limits = c(0, 0.5),
-      breaks = seq(0, 0.5, 0.1),
-      labels = seq(0, 0.5, 0.1),
+      limits = c(0, max(pretty(c(0, max(p_subset$probability, na.rm = TRUE), 0.1), n = 5))),
+      breaks = pretty(c(0, max(p_subset$probability, na.rm = TRUE), 0.1), n = 5),
       expand = c(0, 0)
     ) +
     scale_x_continuous(limits = c(min(p_subset$data) * 0.95, max(p_subset$data) * 1.05)) +
