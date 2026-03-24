@@ -2341,6 +2341,15 @@ all_doyly_fit_chars_merged <- lapply(all_doyly_fit_chars, function(chars_df) {
 all_prob_cols_present <- all_prob_cols[all_prob_cols %in% colnames(filtered_data)]
 seasonal_means <- calculate_seasonal_mean(filtered_data, all_prob_cols_present)
 
+# Guarantee one row per (station, parameter): process_parameter_model returns
+# monthly-level rows (one per month May–Oct) that are averaged inside
+# calculate_seasonal_mean, but an explicit re-aggregation here guards against
+# any monthly-level leakage — which would otherwise inflate each fig3 panel
+# from ≤57 points (one per station) to hundreds (one per station × month).
+seasonal_means <- seasonal_means %>%
+  group_by(station, parameter) %>%
+  summarise(data = mean(data, na.rm = TRUE), .groups = "drop")
+
 facet_parameters <- c("TN", "DIN", "chl", "temp", "limiting_conditions", "strat", "PO4", "sal")
 
 # Separate environmental rows from probability-column rows
@@ -2564,11 +2573,10 @@ all_plots_monthly <- list()
 for (wb in levels(result_all$water_body)) {
   P <- ggplot(
     result_all %>% filter(water_body == wb),
-    aes(x = month, y = data, group = species, color = species, fill = species)
+    aes(x = month, y = data, group = species, color = species)
   ) +
     geom_line(linewidth = 0.5) +
     geom_point(size = 0.75) +
-    geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
     ylab("Probability of presence") +
     xlab("") +
     ggtitle(wb) +
@@ -2590,9 +2598,7 @@ for (wb in levels(result_all$water_body)) {
                      limits = factor(1:12), expand = c(0.01, 0.01)) +
     scale_y_continuous(breaks = .wb_breaks, labels = .wb_breaks,
                        limits = .wb_y_lim, expand = c(0, 0)) +
-    scale_color_manual(values = pal_cols, labels = pal_labs) +
-    scale_fill_manual( values = pal_cols, labels = pal_labs,
-                       guide  = guide_legend(nrow = 2, keyheight = unit(0.2, "cm"), keywidth = unit(0.2, "cm")))
+    scale_color_manual(values = pal_cols, labels = pal_labs)
 
   all_plots_monthly[[wb]] <- P
 }
@@ -2602,8 +2608,8 @@ all_plots_wb <-
   all_plots_monthly[["estuary"]] +
   all_plots_monthly[["open waters"]] +
   plot_layout(axes = "collect_y", ncol = 1, guides = "collect") +
-  plot_annotation(theme = theme(legend.position = "bottom",
-                                legend.box.margin = margin(t = -5)))
+  plot_annotation(theme = theme(legend.position = "right",
+                                legend.box.margin = margin(l = 5)))
 
 ggsave(
   filename = "all_stations_monthly.png",
@@ -2653,6 +2659,79 @@ for (pc in all_prob_cols) {
                   each_station, yearly_dir,
                   paste0(each_station, "_CI.png"), genus = genus_arg)
     }
+  }
+}
+
+# ── Per-genus all-stations averaged plots (monthly, yearly, doyly) ───────────
+# One averaged curve per genus (across all stations) with CIs where applicable.
+for (pc in all_prob_cols) {
+  rlist <- all_ts_results[[pc]]
+  if (is.null(rlist) || length(rlist) == 0) next
+
+  genus_tag <- sub("^probability_?", "", pc)
+  folder    <- if (genus_tag == "") "probability" else genus_tag
+  genus_arg <- if (genus_tag == "") NULL else genus_tag
+  out_dir   <- file.path(script_dir, "figures", folder)
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # Monthly
+  monthly_raw <- rlist[["probparm_station_monthly"]]
+  if (!is.null(monthly_raw) && nrow(monthly_raw) > 0) {
+    monthly_avg <- monthly_raw %>%
+      mutate(month = as.character(as.numeric(as.character(month)))) %>%
+      group_by(month) %>%
+      summarise(data = mean(data, na.rm = TRUE),
+                CI   = mean(CI,   na.rm = TRUE), .groups = "drop") %>%
+      calculate_upr_lwr() %>%
+      mutate(station = "all stations")
+    create_plot(monthly_avg, NULL, "station", "month",
+                "all stations monthly", out_dir,
+                "all_stations_monthly_CI.png", genus = genus_arg)
+  }
+
+  # Yearly (save into a sub-path containing "yearly" to trigger the CI branch
+  # inside create_plot which checks grepl("year", save_path))
+  yearly_raw <- rlist[["probparm_station_yearly"]]
+  pred_raw   <- rlist[["predicted_probs_station_yearly"]]
+  if (!is.null(yearly_raw) && nrow(yearly_raw) > 0) {
+    yearly_avg <- yearly_raw %>%
+      mutate(year = as.numeric(as.character(year))) %>%
+      group_by(year) %>%
+      summarise(data = mean(data, na.rm = TRUE),
+                CI   = mean(CI,   na.rm = TRUE), .groups = "drop") %>%
+      calculate_upr_lwr() %>%
+      mutate(station = "all stations")
+    pred_avg <- if (!is.null(pred_raw) && nrow(pred_raw) > 0) {
+      pred_raw %>%
+        mutate(year = as.numeric(as.character(year))) %>%
+        group_by(year) %>%
+        summarise(predicted_probability = mean(predicted_probability, na.rm = TRUE),
+                  p_val                 = NA_real_, .groups = "drop")
+    } else NULL
+    yearly_dir_all <- file.path(out_dir, "all_stations_yearly")
+    dir.create(yearly_dir_all, showWarnings = FALSE, recursive = TRUE)
+    create_plot(yearly_avg, pred_avg, "station", "year",
+                "all stations yearly", yearly_dir_all,
+                "all_stations_CI.png", genus = genus_arg)
+  }
+
+  # Doyly
+  doyly_raw     <- rlist[["probparm_station_doyly"]]
+  doyly_fit_raw <- rlist[["probparm_station_doyly_fit"]]
+  if (!is.null(doyly_raw) && nrow(doyly_raw) > 0 &&
+      !is.null(doyly_fit_raw) && nrow(doyly_fit_raw) > 0) {
+    doyly_avg <- doyly_raw %>%
+      mutate(doy = as.numeric(as.character(doy))) %>%
+      group_by(doy) %>%
+      summarise(data = mean(data, na.rm = TRUE), .groups = "drop") %>%
+      mutate(station = "all stations")
+    doyly_fit_avg <- doyly_fit_raw %>%
+      mutate(doy = as.numeric(as.character(doy))) %>%
+      group_by(doy) %>%
+      summarise(data = mean(data, na.rm = TRUE), .groups = "drop")
+    create_plot(doyly_avg, doyly_fit_avg, "station", "doy",
+                "all stations doyly", out_dir,
+                "all_stations_doyly.png", genus = genus_arg)
   }
 }
 
