@@ -2645,6 +2645,7 @@ for (pc in all_prob_cols) {
 
   # Yearly plots
   if (!is.null(yearly_df) && nrow(yearly_df) > 0) {
+    yearly_df <- calculate_upr_lwr(yearly_df)
     for (each_station in unique(yearly_df$station)) {
       p.subset  <- yearly_df %>% filter(station == each_station) %>% distinct()
       p.subset2 <- if (!is.null(pred_df)) pred_df %>% filter(station == each_station) else NULL
