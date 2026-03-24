@@ -2497,6 +2497,7 @@ for (pc in all_prob_cols) {
   rlist      <- all_ts_results[[pc]]
   monthly_df <- if (!is.null(rlist)) rlist[["probparm_station_monthly"]] else NULL
   if (is.null(monthly_df) || nrow(monthly_df) == 0) next
+  monthly_df <- calculate_upr_lwr(monthly_df)
 
   genus_tag   <- sub("^probability_?", "", pc)
   monthly_dir <- file.path(script_dir, "figures",
