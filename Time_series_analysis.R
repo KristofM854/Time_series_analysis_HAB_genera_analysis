@@ -2705,8 +2705,9 @@ for (pc in all_prob_cols) {
       pred_raw %>%
         mutate(year = as.numeric(as.character(year))) %>%
         group_by(year) %>%
-        dplyr::summarise(predicted_probability = mean(predicted_probability, na.rm = TRUE),
-                  p_val                 = NA_real_, .groups = "drop")
+        summarise(predicted_probability = mean(predicted_probability, na.rm = TRUE),
+                  p_val                 = NA_real_, .groups = "drop") %>%
+        mutate(station = "all stations")
     } else NULL
     yearly_dir_all <- file.path(out_dir, "all_stations_yearly")
     dir.create(yearly_dir_all, showWarnings = FALSE, recursive = TRUE)
@@ -2728,7 +2729,8 @@ for (pc in all_prob_cols) {
     doyly_fit_avg <- doyly_fit_raw %>%
       mutate(doy = as.numeric(as.character(doy))) %>%
       group_by(doy) %>%
-      dplyr::summarise(data = mean(data, na.rm = TRUE), .groups = "drop")
+      summarise(data = mean(data, na.rm = TRUE), .groups = "drop") %>%
+      mutate(station = "all stations")
     create_plot(doyly_avg, doyly_fit_avg, "station", "doy",
                 "all stations doyly", out_dir,
                 "all_stations_doyly.png", genus = genus_arg)
