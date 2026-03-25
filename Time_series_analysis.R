@@ -2718,10 +2718,10 @@ for (pc in all_prob_cols) {
       tryCatch({
         present_years_only2 <- filtered_data %>%
           filter(year >= first_year) %>%
-          drop_na(!!sym(pc))
+          drop_na(!!sym(pc)) %>%
+          mutate(.prob = as.numeric(as.character(!!sym(pc))))
         model_glm <- glm(
-          cbind(as.numeric(as.character(!!sym(pc))),
-                1 - as.numeric(as.character(!!sym(pc)))) ~ year,
+          cbind(.prob, 1 - .prob) ~ year,
           data   = present_years_only2,
           family = binomial
         )
