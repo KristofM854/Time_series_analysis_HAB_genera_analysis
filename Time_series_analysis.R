@@ -2348,7 +2348,7 @@ seasonal_means <- calculate_seasonal_mean(filtered_data, all_prob_cols_present)
 # from ≤57 points (one per station) to hundreds (one per station × month).
 seasonal_means <- seasonal_means %>%
   group_by(station, parameter) %>%
-  summarise(data = mean(data, na.rm = TRUE), .groups = "drop")
+  dplyr::summarise(data = mean(data, na.rm = TRUE), .groups = "drop")
 
 facet_parameters <- c("TN", "DIN", "chl", "temp", "limiting_conditions", "strat", "PO4", "sal")
 
@@ -2680,7 +2680,7 @@ for (pc in all_prob_cols) {
     monthly_avg <- monthly_raw %>%
       mutate(month = as.character(as.numeric(as.character(month)))) %>%
       group_by(month) %>%
-      summarise(data = mean(data, na.rm = TRUE),
+      dplyr::summarise(data = mean(data, na.rm = TRUE),
                 CI   = mean(CI,   na.rm = TRUE), .groups = "drop") %>%
       calculate_upr_lwr() %>%
       mutate(station = "all stations")
@@ -2697,7 +2697,7 @@ for (pc in all_prob_cols) {
     yearly_avg <- yearly_raw %>%
       mutate(year = as.numeric(as.character(year))) %>%
       group_by(year) %>%
-      summarise(data = mean(data, na.rm = TRUE),
+      dplyr::summarise(data = mean(data, na.rm = TRUE),
                 CI   = mean(CI,   na.rm = TRUE), .groups = "drop") %>%
       calculate_upr_lwr() %>%
       mutate(station = "all stations")
@@ -2724,7 +2724,7 @@ for (pc in all_prob_cols) {
     doyly_avg <- doyly_raw %>%
       mutate(doy = as.numeric(as.character(doy))) %>%
       group_by(doy) %>%
-      summarise(data = mean(data, na.rm = TRUE), .groups = "drop") %>%
+      dplyr::summarise(data = mean(data, na.rm = TRUE), .groups = "drop") %>%
       mutate(station = "all stations")
     doyly_fit_avg <- doyly_fit_raw %>%
       mutate(doy = as.numeric(as.character(doy))) %>%
@@ -2913,7 +2913,7 @@ for (pc in all_prob_cols) {
 
 # Use overall "probability" results for the methodology illustration figure (Fig 2)
 overall_doyly     <- all_ts_results[["probability"]][["probparm_station_doyly"]]
-overall_doyly_fit <- all_ts_results[["probability"]][["predicted_probs_station_doyly"]]
+overall_doyly_fit <- all_ts_results[["probability"]][["probparm_station_doyly_fit"]]
 
 if (!is.null(overall_doyly) && nrow(overall_doyly) > 0) {
   overall_doyly     <- left_join(overall_doyly,     station_and_waterbody)
