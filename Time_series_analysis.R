@@ -2701,7 +2701,7 @@ for (pc in all_prob_cols) {
     # First year any station detected the genus
     first_year <- filtered_data %>%
       filter(!!sym(pc) == 1) %>%
-      summarise(y = min(year, na.rm = TRUE)) %>%
+      dplyr::summarise(y = min(year, na.rm = TRUE)) %>%
       pull(y)
 
     yearly_avg <- yearly_raw %>%
@@ -2756,7 +2756,7 @@ for (pc in all_prob_cols) {
     doyly_fit_avg <- doyly_fit_raw %>%
       mutate(doy = as.numeric(as.character(doy))) %>%
       group_by(doy) %>%
-      summarise(data = mean(data, na.rm = TRUE), .groups = "drop") %>%
+      dplyr::summarise(data = mean(data, na.rm = TRUE), .groups = "drop") %>%
       mutate(station = "all stations")
     create_plot(doyly_avg, doyly_fit_avg, "station", "doy",
                 "all stations doyly", all_avg_doyly,
