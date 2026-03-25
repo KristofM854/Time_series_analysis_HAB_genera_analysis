@@ -2664,15 +2664,21 @@ for (pc in all_prob_cols) {
 
 # ── Per-genus all-stations averaged plots (monthly, yearly, doyly) ───────────
 # One averaged curve per genus (across all stations) with CIs where applicable.
+# All output goes under figures/all_station_plots/{monthly,yearly,doyly}/
+all_avg_base    <- file.path(script_dir, "figures", "all_station_plots")
+all_avg_monthly <- file.path(all_avg_base, "monthly")
+all_avg_yearly  <- file.path(all_avg_base, "yearly")   # path contains "year" → triggers CI branch
+all_avg_doyly   <- file.path(all_avg_base, "doyly")
+for (d in c(all_avg_monthly, all_avg_yearly, all_avg_doyly))
+  dir.create(d, showWarnings = FALSE, recursive = TRUE)
+
 for (pc in all_prob_cols) {
   rlist <- all_ts_results[[pc]]
   if (is.null(rlist) || length(rlist) == 0) next
 
-  genus_tag <- sub("^probability_?", "", pc)
-  folder    <- if (genus_tag == "") "probability" else genus_tag
-  genus_arg <- if (genus_tag == "") NULL else genus_tag
-  out_dir   <- file.path(script_dir, "figures", folder)
-  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+  genus_tag  <- sub("^probability_?", "", pc)
+  genus_arg  <- if (genus_tag == "") NULL else genus_tag
+  file_stem  <- if (genus_tag == "") "probability" else genus_tag
 
   # Monthly
   monthly_raw <- rlist[["probparm_station_monthly"]]
@@ -2685,35 +2691,56 @@ for (pc in all_prob_cols) {
       calculate_upr_lwr() %>%
       mutate(station = "all stations")
     create_plot(monthly_avg, NULL, "station", "month",
-                "all stations monthly", out_dir,
-                "all_stations_monthly_CI.png", genus = genus_arg)
+                "all stations monthly", all_avg_monthly,
+                paste0(file_stem, "_all_stations_monthly_CI.png"), genus = genus_arg)
   }
 
-  # Yearly (save into a sub-path containing "yearly" to trigger the CI branch
-  # inside create_plot which checks grepl("year", save_path))
+  # Yearly — observed average + binomial GLM trend fitted on pooled raw data
   yearly_raw <- rlist[["probparm_station_yearly"]]
-  pred_raw   <- rlist[["predicted_probs_station_yearly"]]
   if (!is.null(yearly_raw) && nrow(yearly_raw) > 0) {
+    # First year any station detected the genus
+    first_year <- filtered_data %>%
+      filter(!!sym(pc) == 1) %>%
+      summarise(y = min(year, na.rm = TRUE)) %>%
+      pull(y)
+
     yearly_avg <- yearly_raw %>%
       mutate(year = as.numeric(as.character(year))) %>%
+      filter(is.finite(first_year) & year >= first_year) %>%
       group_by(year) %>%
       dplyr::summarise(data = mean(data, na.rm = TRUE),
                 CI   = mean(CI,   na.rm = TRUE), .groups = "drop") %>%
       calculate_upr_lwr() %>%
       mutate(station = "all stations")
-    pred_avg <- if (!is.null(pred_raw) && nrow(pred_raw) > 0) {
-      pred_raw %>%
-        mutate(year = as.numeric(as.character(year))) %>%
-        group_by(year) %>%
-        summarise(predicted_probability = mean(predicted_probability, na.rm = TRUE),
-                  p_val                 = NA_real_, .groups = "drop") %>%
-        mutate(station = "all stations")
+
+    # Binomial GLM on pooled raw observations (probability ~ year)
+    pred_avg <- if (is.finite(first_year)) {
+      tryCatch({
+        present_years_only2 <- filtered_data %>%
+          filter(year >= first_year) %>%
+          drop_na(!!sym(pc))
+        model_glm <- glm(
+          cbind(as.numeric(as.character(!!sym(pc))),
+                1 - as.numeric(as.character(!!sym(pc)))) ~ year,
+          data   = present_years_only2,
+          family = binomial
+        )
+        max_year  <- max(present_years_only2$year, na.rm = TRUE)
+        years_seq <- seq(first_year, max_year, by = 1)
+        data.frame(
+          year                 = years_seq,
+          predicted_probability = predict(model_glm,
+                                          newdata = data.frame(year = years_seq),
+                                          type = "response"),
+          p_val   = summary(model_glm)$coefficients[1, 4],
+          station = "all stations"
+        )
+      }, error = function(e) NULL)
     } else NULL
-    yearly_dir_all <- file.path(out_dir, "all_stations_yearly")
-    dir.create(yearly_dir_all, showWarnings = FALSE, recursive = TRUE)
+
     create_plot(yearly_avg, pred_avg, "station", "year",
-                "all stations yearly", yearly_dir_all,
-                "all_stations_CI.png", genus = genus_arg)
+                "all stations yearly", all_avg_yearly,
+                paste0(file_stem, "_all_stations_CI.png"), genus = genus_arg)
   }
 
   # Doyly
@@ -2732,8 +2759,8 @@ for (pc in all_prob_cols) {
       summarise(data = mean(data, na.rm = TRUE), .groups = "drop") %>%
       mutate(station = "all stations")
     create_plot(doyly_avg, doyly_fit_avg, "station", "doy",
-                "all stations doyly", out_dir,
-                "all_stations_doyly.png", genus = genus_arg)
+                "all stations doyly", all_avg_doyly,
+                paste0(file_stem, "_all_stations_doyly.png"), genus = genus_arg)
   }
 }
 
