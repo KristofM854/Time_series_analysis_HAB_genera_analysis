@@ -276,6 +276,64 @@ process_harmful_genera_comprehensive <- function(df) {
   return(df)
 }
 
+####### Function to validate data integrity after aggregation #######
+validate_aggregated_data <- function(df, dataset_name = "Unknown") {
+  cat("Validating data integrity for", dataset_name, "...\n")
+
+  # Check for data integrity violations
+  prob_cols <- colnames(df)[str_detect(colnames(df), "^probability_")]
+
+  violations <- tibble()
+
+  for (prob_col in prob_cols) {
+    if (!prob_col %in% colnames(df)) next
+
+    expected_genus <- str_remove(prob_col, "probability_")
+    expected_genus <- case_when(
+      expected_genus == "Pseudonitzschia" ~ "Pseudo-nitzschia",
+      TRUE ~ expected_genus
+    )
+
+    violations_temp <- df %>%
+      filter(.data[[prob_col]] == 1L & genus != expected_genus) %>%
+      dplyr::select(any_of(c("date", "station", "combined_station", "genus", "species", prob_col))) %>%
+      mutate(
+        expected_genus = expected_genus,
+        prob_column = prob_col
+      )
+
+    violations <- bind_rows(violations, violations_temp)
+  }
+
+  if (nrow(violations) > 0) {
+    cat("❌ Data integrity violations found in", dataset_name, ":\n")
+    print(violations)
+    cat("These will be fixed by the new aggregation logic.\n\n")
+  } else {
+    cat("✅ No data integrity violations found in", dataset_name, "\n\n")
+  }
+
+  # Summary statistics
+  n_total <- nrow(df)
+  n_harmful <- sum(df$probability == 1L, na.rm = TRUE)
+
+  cat("Summary for", dataset_name, ":\n")
+  cat("- Total observations:", n_total, "\n")
+  cat("- Harmful algae present:", n_harmful, "(", round(100 * n_harmful/n_total, 1), "%)\n")
+
+  # Per-genus breakdown
+  for (prob_col in prob_cols) {
+    if (prob_col %in% colnames(df)) {
+      n_genus <- sum(df[[prob_col]] == 1L, na.rm = TRUE)
+      genus_name <- str_remove(prob_col, "probability_")
+      cat("- ", genus_name, "present:", n_genus, "\n")
+    }
+  }
+  cat("\n")
+
+  return(df)
+}
+
 ####### Function retaining only a single 'No harmful algae' entry per day per station #######
 filter_harmful_algae <- function(df, species_col = "species") {
   harmful_species <- df %>%

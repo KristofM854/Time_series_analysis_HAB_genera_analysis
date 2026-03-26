@@ -246,14 +246,63 @@ norway_combined_probs <- norway_combined %>%
     cells_L_Phaeocystis       = sum(cells_L[genus == "Phaeocystis"],       na.rm = TRUE),
     cells_L_Karlodinium       = sum(cells_L[genus == "Karlodinium"],       na.rm = TRUE),
     cells_L_Cyanobacteria     = sum(cells_L[genus == "Cyanobacteria"],     na.rm = TRUE),
-    # Keep first value of categorical/date-component fields
-    across(c(day, month, year, doy, strat, species, genus, toxin_syndrome, harmful_algae), first),
+    # Multi-species information preservation
+    species_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(species[harmful_algae == TRUE & !is.na(species)]), collapse = " | "),
+      "No harmful algae"
+    ),
+    genera_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(genus[harmful_algae == TRUE & !is.na(genus)]), collapse = " | "),
+      "Other"
+    ),
+    toxin_syndromes_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(toxin_syndrome[harmful_algae == TRUE & !is.na(toxin_syndrome)]), collapse = " | "),
+      "Other"
+    ),
+    # Dominant species for backward compatibility (highest cell count)
+    dominant_species = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          species[max_idx]
+        } else { "No harmful algae" }
+      } else { "No harmful algae" }
+    },
+    dominant_genus = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          genus[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
+    dominant_toxin_syndrome = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          toxin_syndrome[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
+    # Keep first value of date-component and stratification fields
+    across(c(day, month, year, doy, strat), first),
     .groups = "drop"
   ) %>%
   mutate(
-    logistic = probability,  # alias kept for downstream compatibility
-    country  = "Norway"
-  )
+    species        = dominant_species,
+    genus          = dominant_genus,
+    toxin_syndrome = dominant_toxin_syndrome,
+    harmful_algae  = genus != "Other",
+    logistic       = probability,  # alias kept for downstream compatibility
+    country        = "Norway"
+  ) %>%
+  dplyr::select(-dominant_species, -dominant_genus, -dominant_toxin_syndrome)
 
 # Step 2: Average all numeric environmental variables per date/station
 # Probability columns are excluded here — they are already correctly aggregated in norway_combined_probs
@@ -272,6 +321,9 @@ norway_combined <- left_join(norway_combined_probs, norway_combined_num,
 
 # Step 4: Compute risk classification levels from aggregated genus-specific cell concentrations
 norway_combined <- apply_risk_levels(norway_combined)
+
+# Validate the aggregated data
+norway_combined <- validate_aggregated_data(norway_combined, "Norway")
 
 # Save norway_combined as a new txt.file
 write.table(norway_combined,
@@ -572,17 +624,94 @@ denmark_combined <-
   all.y = T
  )
 
-# Introduce overall probability (1/0/NA) for all harmful genera
+# Introduce overall probability (1/0/NA) for all harmful genera and aggregate multi-species events
 denmark_combined <- denmark_combined %>%
-  mutate(
+  group_by(date, station) %>%
+  dplyr::summarise(
+    # Probability aggregation
     probability = case_when(
-      harmful_algae == TRUE & !is.na(cells_L) & cells_L > 0 ~ 1L,
-      is.na(species) | is.na(cells_L)                        ~ NA_integer_,
-      TRUE                                                    ~ 0L
+      any(harmful_algae == TRUE & !is.na(cells_L) & cells_L > 0, na.rm = TRUE) ~ 1L,
+      any(!is.na(species) & !is.na(cells_L), na.rm = TRUE) ~ 0L,
+      TRUE ~ NA_integer_
     ),
-    logistic = probability,  # alias kept for downstream compatibility
-    country  = "Denmark"
-  )
+    # Individual genus probabilities
+    across(
+      all_of(unname(sapply(genera_of_interest, prob_col_name))),
+      ~ case_when(any(. == 1L, na.rm = TRUE) ~ 1L,
+                  all(is.na(.)) ~ NA_integer_,
+                  TRUE ~ 0L)
+    ),
+    # Cell count aggregation
+    cells_L_Alexandrium       = sum(cells_L[genus == "Alexandrium"],       na.rm = TRUE),
+    cells_L_Dinophysis        = sum(cells_L[genus == "Dinophysis"],        na.rm = TRUE),
+    cells_L_Pseudonitzschia   = sum(cells_L[genus == "Pseudo-nitzschia"],  na.rm = TRUE),
+    cells_L_Azadinium         = sum(cells_L[genus == "Azadinium"],         na.rm = TRUE),
+    cells_L_Chrysochromulina  = sum(cells_L[genus == "Chrysochromulina"],  na.rm = TRUE),
+    cells_L_Prymnesium        = sum(cells_L[genus == "Prymnesium"],        na.rm = TRUE),
+    cells_L_Amphidinium       = sum(cells_L[genus == "Amphidinium"],       na.rm = TRUE),
+    cells_L_Pseudochattonella = sum(cells_L[genus == "Pseudochattonella"], na.rm = TRUE),
+    cells_L_Phaeocystis       = sum(cells_L[genus == "Phaeocystis"],       na.rm = TRUE),
+    cells_L_Karlodinium       = sum(cells_L[genus == "Karlodinium"],       na.rm = TRUE),
+    cells_L_Cyanobacteria     = sum(cells_L[genus == "Cyanobacteria"],     na.rm = TRUE),
+    # Multi-species information preservation
+    species_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(species[harmful_algae == TRUE & !is.na(species)]), collapse = " | "),
+      "No harmful algae"
+    ),
+    genera_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(genus[harmful_algae == TRUE & !is.na(genus)]), collapse = " | "),
+      "Other"
+    ),
+    toxin_syndromes_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(toxin_syndrome[harmful_algae == TRUE & !is.na(toxin_syndrome)]), collapse = " | "),
+      "Other"
+    ),
+    # Dominant species for backward compatibility (highest cell count)
+    dominant_species = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          species[max_idx]
+        } else { "No harmful algae" }
+      } else { "No harmful algae" }
+    },
+    dominant_genus = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          genus[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
+    dominant_toxin_syndrome = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          toxin_syndrome[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
+    # Environmental variables (average) and categorical variables (first)
+    across(where(is.numeric) & !starts_with("probability_") & !starts_with("cells_L_"), ~ mean(.x, na.rm = TRUE)),
+    across(any_of(c("day", "month", "year", "doy", "strat", "limiting_conditions")), first),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    species        = dominant_species,
+    genus          = dominant_genus,
+    toxin_syndrome = dominant_toxin_syndrome,
+    harmful_algae  = genus != "Other",
+    logistic       = probability,  # alias kept for downstream compatibility
+    country        = "Denmark"
+  ) %>%
+  dplyr::select(-dominant_species, -dominant_genus, -dominant_toxin_syndrome) %>%
+  drop_na(station, date)
 
 # Rename columns
 denmark_combined <- denmark_combined %>% 
@@ -614,6 +743,9 @@ denmark_combined <-
   DIP = DIP / 30.973762 ,
   PO4 = PO4 / 94.9712
  ) %>% drop_na(station, date) 
+
+# Validate the aggregated data
+denmark_combined <- validate_aggregated_data(denmark_combined, "Denmark")
 
 write.table(denmark_combined,
       paste0(script_dir, "/", "denmark_combined.txt"),
@@ -879,6 +1011,95 @@ sweden_combined <- sweden_combined %>%
   dplyr::select(-wind_speed) %>%
   filter(is.na(parameter) | parameter != "Abundance")
 
+# Aggregate multi-species sampling events
+sweden_combined <- sweden_combined %>%
+  group_by(date, station) %>%
+  dplyr::summarise(
+    # Probability aggregation
+    probability = case_when(
+      any(harmful_algae == TRUE & !is.na(cells_L) & cells_L > 0, na.rm = TRUE) ~ 1L,
+      any(!is.na(species) & !is.na(cells_L), na.rm = TRUE) ~ 0L,
+      TRUE ~ NA_integer_
+    ),
+    # Individual genus probabilities
+    across(
+      all_of(unname(sapply(genera_of_interest, prob_col_name))),
+      ~ case_when(any(. == 1L, na.rm = TRUE) ~ 1L,
+                  all(is.na(.)) ~ NA_integer_,
+                  TRUE ~ 0L)
+    ),
+    # Cell count aggregation
+    cells_L_Alexandrium       = sum(cells_L[genus == "Alexandrium"],       na.rm = TRUE),
+    cells_L_Dinophysis        = sum(cells_L[genus == "Dinophysis"],        na.rm = TRUE),
+    cells_L_Pseudonitzschia   = sum(cells_L[genus == "Pseudo-nitzschia"],  na.rm = TRUE),
+    cells_L_Azadinium         = sum(cells_L[genus == "Azadinium"],         na.rm = TRUE),
+    cells_L_Chrysochromulina  = sum(cells_L[genus == "Chrysochromulina"],  na.rm = TRUE),
+    cells_L_Prymnesium        = sum(cells_L[genus == "Prymnesium"],        na.rm = TRUE),
+    cells_L_Amphidinium       = sum(cells_L[genus == "Amphidinium"],       na.rm = TRUE),
+    cells_L_Pseudochattonella = sum(cells_L[genus == "Pseudochattonella"], na.rm = TRUE),
+    cells_L_Phaeocystis       = sum(cells_L[genus == "Phaeocystis"],       na.rm = TRUE),
+    cells_L_Karlodinium       = sum(cells_L[genus == "Karlodinium"],       na.rm = TRUE),
+    cells_L_Cyanobacteria     = sum(cells_L[genus == "Cyanobacteria"],     na.rm = TRUE),
+    # Multi-species information preservation
+    species_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(species[harmful_algae == TRUE & !is.na(species)]), collapse = " | "),
+      "No harmful algae"
+    ),
+    genera_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(genus[harmful_algae == TRUE & !is.na(genus)]), collapse = " | "),
+      "Other"
+    ),
+    toxin_syndromes_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(toxin_syndrome[harmful_algae == TRUE & !is.na(toxin_syndrome)]), collapse = " | "),
+      "Other"
+    ),
+    # Dominant species for backward compatibility (highest cell count)
+    dominant_species = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          species[max_idx]
+        } else { "No harmful algae" }
+      } else { "No harmful algae" }
+    },
+    dominant_genus = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          genus[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
+    dominant_toxin_syndrome = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          toxin_syndrome[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
+    # Environmental variables (average) and categorical variables (first)
+    across(where(is.numeric) & !starts_with("probability_") & !starts_with("cells_L_"), ~ mean(.x, na.rm = TRUE)),
+    across(any_of(c("day", "month", "year", "doy", "strat", "country", "parameter")), first),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    species        = dominant_species,
+    genus          = dominant_genus,
+    toxin_syndrome = dominant_toxin_syndrome,
+    harmful_algae  = genus != "Other"
+  ) %>%
+  dplyr::select(-dominant_species, -dominant_genus, -dominant_toxin_syndrome)
+
+# Validate the aggregated data
+sweden_combined <- validate_aggregated_data(sweden_combined, "Sweden")
+
 # Save sweden_combined as a new txt.file
 write.table(sweden_combined,
       file = paste0(script_dir, "/", "sweden_combined.txt"),
@@ -1069,6 +1290,91 @@ germany_combined <- germany_combined %>%
   ) %>%
   ungroup()
 
+# Aggregate multi-species sampling events (fixes species/genus first() bug)
+germany_combined <- germany_combined %>%
+  group_by(date, station) %>%
+  dplyr::summarise(
+    # Probability aggregation
+    across(
+      all_of(c("probability", unname(sapply(genera_of_interest, prob_col_name)))),
+      ~ case_when(any(. == 1L, na.rm = TRUE) ~ 1L,
+                  all(is.na(.)) ~ NA_integer_,
+                  TRUE ~ 0L)
+    ),
+    # Cell count aggregation
+    cells_L_Alexandrium       = sum(cells_L[genus == "Alexandrium"],       na.rm = TRUE),
+    cells_L_Dinophysis        = sum(cells_L[genus == "Dinophysis"],        na.rm = TRUE),
+    cells_L_Pseudonitzschia   = sum(cells_L[genus == "Pseudo-nitzschia"],  na.rm = TRUE),
+    cells_L_Azadinium         = sum(cells_L[genus == "Azadinium"],         na.rm = TRUE),
+    cells_L_Chrysochromulina  = sum(cells_L[genus == "Chrysochromulina"],  na.rm = TRUE),
+    cells_L_Prymnesium        = sum(cells_L[genus == "Prymnesium"],        na.rm = TRUE),
+    cells_L_Amphidinium       = sum(cells_L[genus == "Amphidinium"],       na.rm = TRUE),
+    cells_L_Pseudochattonella = sum(cells_L[genus == "Pseudochattonella"], na.rm = TRUE),
+    cells_L_Phaeocystis       = sum(cells_L[genus == "Phaeocystis"],       na.rm = TRUE),
+    cells_L_Karlodinium       = sum(cells_L[genus == "Karlodinium"],       na.rm = TRUE),
+    cells_L_Cyanobacteria     = sum(cells_L[genus == "Cyanobacteria"],     na.rm = TRUE),
+    # Multi-species information preservation
+    species_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(species[harmful_algae == TRUE & !is.na(species)]), collapse = " | "),
+      "No harmful algae"
+    ),
+    genera_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(genus[harmful_algae == TRUE & !is.na(genus)]), collapse = " | "),
+      "Other"
+    ),
+    toxin_syndromes_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(toxin_syndrome[harmful_algae == TRUE & !is.na(toxin_syndrome)]), collapse = " | "),
+      "Other"
+    ),
+    # Dominant species for backward compatibility (highest cell count)
+    dominant_species = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          species[max_idx]
+        } else { "No harmful algae" }
+      } else { "No harmful algae" }
+    },
+    dominant_genus = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          genus[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
+    dominant_toxin_syndrome = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          toxin_syndrome[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
+    # Environmental variables (average) and categorical variables (first)
+    across(where(is.numeric) & !starts_with("probability_") & !starts_with("cells_L_"), ~ mean(.x, na.rm = TRUE)),
+    across(any_of(c("day", "month", "year", "doy", "strat", "country")), first),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    species        = dominant_species,
+    genus          = dominant_genus,
+    toxin_syndrome = dominant_toxin_syndrome,
+    harmful_algae  = genus != "Other",
+    logistic       = probability,
+    country        = "Germany"
+  ) %>%
+  dplyr::select(-dominant_species, -dominant_genus, -dominant_toxin_syndrome)
+
+# Validate the aggregated data
+germany_combined <- validate_aggregated_data(germany_combined, "Germany")
+
 # export data
 write.table(germany_combined,
       paste0(script_dir, "/", "germany_combined.txt"),
@@ -1179,13 +1485,64 @@ all_data_probs <- all_data %>%
     cells_L_Phaeocystis       = sum(cells_L[genus == "Phaeocystis"],       na.rm = TRUE),
     cells_L_Karlodinium       = sum(cells_L[genus == "Karlodinium"],       na.rm = TRUE),
     cells_L_Cyanobacteria     = sum(cells_L[genus == "Cyanobacteria"],     na.rm = TRUE),
+    # Multi-species information preservation
+    species_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(species[harmful_algae == TRUE & !is.na(species)]), collapse = " | "),
+      "No harmful algae"
+    ),
+    genera_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(genus[harmful_algae == TRUE & !is.na(genus)]), collapse = " | "),
+      "Other"
+    ),
+    toxin_syndromes_present = ifelse(
+      any(harmful_algae == TRUE, na.rm = TRUE),
+      paste(unique(toxin_syndrome[harmful_algae == TRUE & !is.na(toxin_syndrome)]), collapse = " | "),
+      "Other"
+    ),
+    # Dominant species for backward compatibility (highest cell count)
+    dominant_species = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          species[max_idx]
+        } else { "No harmful algae" }
+      } else { "No harmful algae" }
+    },
+    dominant_genus = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          genus[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
+    dominant_toxin_syndrome = {
+      if(any(harmful_algae == TRUE, na.rm = TRUE)) {
+        harmful_rows <- which(harmful_algae == TRUE & !is.na(cells_L))
+        if(length(harmful_rows) > 0) {
+          max_idx <- harmful_rows[which.max(cells_L[harmful_rows])]
+          toxin_syndrome[max_idx]
+        } else { "Other" }
+      } else { "Other" }
+    },
     # Categorical / metadata fields
     strat               = combine_strat(strat),
     limiting_conditions = combine_limiting_conditions(limiting_conditions),
-    across(c(day, month, year, doy, species, genus, toxin_syndrome, country), first),
+    across(c(day, month, year, doy, country), first),
     .groups = "drop"
   ) %>%
-  mutate(logistic = probability)  # alias kept for downstream compatibility
+  mutate(
+    species        = dominant_species,
+    genus          = dominant_genus,
+    toxin_syndrome = dominant_toxin_syndrome,
+    harmful_algae  = genus != "Other",
+    logistic       = probability  # alias kept for downstream compatibility
+  ) %>%
+  dplyr::select(-dominant_species, -dominant_genus, -dominant_toxin_syndrome)
 
 # Step 2: Average all numeric environmental variables per combined_station/date
 # Probability columns are excluded here — they are already correctly aggregated in all_data_probs
@@ -1202,6 +1559,59 @@ all_data_num <- all_data %>%
 all_data <- left_join(all_data_probs, all_data_num, by = c("combined_station", "date")) %>%
   apply_risk_levels() %>%
   update_dates()
+
+# Validate the final aggregated data
+all_data <- validate_aggregated_data(all_data, "All Data Combined")
+
+# === FINAL DATA VERIFICATION ===
+cat("=== FINAL DATA VERIFICATION ===\n")
+
+# 1. Check that species_present contains all species when multiple genera are present
+multi_genus_check <- all_data %>%
+  filter(str_detect(genera_present, "\\|")) %>%
+  dplyr::select(any_of(c("date", "combined_station", "species", "genus", "species_present", "genera_present"))) %>%
+  head(10)
+
+if (nrow(multi_genus_check) > 0) {
+  cat("✅ Multi-genus events found - checking species preservation:\n")
+  print(multi_genus_check)
+} else {
+  cat("ℹ️ No multi-genus events in final dataset.\n")
+}
+
+# 2. Check for any remaining data integrity violations
+final_violations <- all_data %>%
+  dplyr::select(any_of(c("date", "combined_station", "genus")), starts_with("probability_")) %>%
+  pivot_longer(starts_with("probability_"), names_to = "prob_col", values_to = "prob_val") %>%
+  filter(prob_val == 1L) %>%
+  mutate(
+    expected_genus = str_remove(prob_col, "probability_"),
+    expected_genus = ifelse(expected_genus == "Pseudonitzschia", "Pseudo-nitzschia", expected_genus)
+  ) %>%
+  filter(genus != expected_genus)
+
+if (nrow(final_violations) > 0) {
+  cat("❌ REMAINING DATA INTEGRITY VIOLATIONS:\n")
+  print(final_violations)
+} else {
+  cat("✅ NO data integrity violations found in final dataset!\n")
+}
+
+# 3. Summary statistics
+cat("\n=== SUMMARY STATISTICS ===\n")
+cat("Total observations:", nrow(all_data), "\n")
+cat("Stations:", length(unique(all_data$combined_station)), "\n")
+cat("Date range:", as.character(min(all_data$date, na.rm = TRUE)), "to",
+    as.character(max(all_data$date, na.rm = TRUE)), "\n\n")
+
+for (genus_name in genera_of_interest) {
+  prob_col <- prob_col_name(genus_name)
+  if (prob_col %in% colnames(all_data)) {
+    n_present <- sum(all_data[[prob_col]] == 1L, na.rm = TRUE)
+    cat(genus_name, "present:", n_present, "observations\n")
+  }
+}
+cat("\n=== IMPLEMENTATION COMPLETE ===\n")
 
 # Save all_data as a new txt.file
 write.table(all_data,
